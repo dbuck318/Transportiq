@@ -1,0 +1,138 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 0. Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- SHARED HELPERS ---
+    function isSignedIn() { return request.auth != null; }
+    function isSuperAdmin() { return isSignedIn() && request.auth.token.email == 'david.a.buckley71@gmail.com'; }
+    function isAdmin() { return isSignedIn() && (isSuperAdmin() || exists(/databases/$(database)/documents/admins/$(request.auth.uid))); }
+    function incoming() { return request.resource.data; }
+    function existing() { return resource.data; }
+    function isOwner(data) { return isSignedIn() && data.ownerId == request.auth.uid; }
+    function isValidId(id) { return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); }
+
+    // --- ENTITY VALIDATION ---
+    function isValidHaul(data) {
+      return data.keys().hasAll(['unitNumber', 'unitType', 'pickUpDate', 'pickUpLocation', 'deliveryDate', 'deliveryLocation', 'totalMiles', 'loadedMiles', 'deadheadMiles', 'ratePerMile', 'milesPerGallon', 'loadedMpg', 'deadheadMpg', 'scaleWeight', 'grossWeight', 'grossRevenue', 'totalOperatingCosts', 'netProfit', 'status', 'ownerId', 'createdAt', 'updatedAt'])
+        && data.unitNumber is string && data.unitNumber.size() <= 64
+        && data.unitType is string && data.unitType.size() <= 64
+        && data.pickUpLocation is string && data.pickUpLocation.size() <= 256
+        && data.deliveryLocation is string && data.deliveryLocation.size() <= 256
+        && data.totalMiles is number && data.totalMiles >= 0
+        && data.loadedMiles is number && data.loadedMiles >= 0
+        && data.deadheadMiles is number && data.deadheadMiles >= 0
+        && data.ratePerMile is number && data.ratePerMile >= 0
+        && data.milesPerGallon is number && data.milesPerGallon >= 0
+        && data.loadedMpg is number && data.loadedMpg >= 0
+        && data.deadheadMpg is number && data.deadheadMpg >= 0
+        && data.scaleWeight is number && data.scaleWeight >= 0
+        && data.grossWeight is number && data.grossWeight >= 0
+        && data.grossRevenue is number
+        && data.totalOperatingCosts is number
+        && data.netProfit is number
+        && data.status in ['Active', 'Completed', 'Finalized']
+        && data.ownerId == request.auth.uid
+        // Metadata is managed
+        && (data.createdAt == request.time || data.createdAt == existing().createdAt)
+        && data.updatedAt == request.time;
+    }
+
+    function isValidExpense(data) {
+      return data.keys().hasAll(['haulId', 'category', 'amount', 'ownerId', 'timestamp', 'vendor'])
+        && data.haulId is string && isValidId(data.haulId)
+        && data.category in ['Fuel', 'DEF', 'Permits', 'Maintenance', 'Maintenance/DEF', 'Food', 'Misc', 'Toll']
+        && data.amount is number && data.amount >= 0
+        && data.ownerId == request.auth.uid
+        && data.vendor is string && data.vendor.size() <= 256;
+    }
+
+    function isValidScannedReceipt(data) {
+      return data.keys().hasAll(['fileName', 'fileType', 'dataUrl', 'timestamp', 'vendor', 'amount'])
+        && data.fileName is string && data.fileName.size() <= 256
+        && data.fileType is string && data.fileType.size() <= 128
+        && data.dataUrl is string && data.dataUrl.size() <= 10485760
+        && data.timestamp is string && data.timestamp.size() <= 64
+        && data.vendor is string && data.vendor.size() <= 256
+        && data.amount is number && data.amount >= 0;
+    }
+
+    // --- HAULS ---
+    match /hauls/{haulId} {
+      allow create: if isSignedIn() && isValidHaul(incoming()) 
+        && incoming().createdAt == request.time;
+      
+      allow get: if isSignedIn() && isOwner(existing());
+      
+      allow list: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+      
+      allow delete: if isSignedIn() && isOwner(existing());
+
+      allow update: if isSignedIn() && isOwner(existing()) && (
+        (isValidHaul(incoming()) 
+          && (existing().status == 'Active' || isAdmin())
+          && incoming().ownerId == existing().ownerId
+          && incoming().createdAt == existing().createdAt
+        ) || 
+        (existing().status in ['Completed', 'Finalized'] && incoming().status == 'Active' 
+          && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+        ) ||
+        (existing().status in ['Completed', 'Finalized'] && incoming().status in ['Completed', 'Finalized']
+          && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'folder', 'updatedAt'])
+        )
+      );
+
+      // --- EXPENSES ---
+      match /expenses/{expenseId} {
+        allow get: if isSignedIn() && isOwner(existing());
+        allow list: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+        
+        allow create: if isSignedIn() && isValidExpense(incoming())
+          && get(/databases/$(database)/documents/hauls/$(haulId)).data.ownerId == request.auth.uid
+          && get(/databases/$(database)/documents/hauls/$(haulId)).data.status == 'Active';
+          
+        allow delete: if isSignedIn() && isOwner(existing())
+          && get(/databases/$(database)/documents/hauls/$(haulId)).data.status == 'Active';
+          
+        allow update: if isSignedIn() && isOwner(existing()) && isValidExpense(incoming())
+          && get(/databases/$(database)/documents/hauls/$(haulId)).data.status == 'Active'
+          && incoming().haulId == existing().haulId;
+      }
+
+      // --- SCANNED RECEIPTS ---
+      match /scannedReceipts/{receiptId} {
+        allow get: if isSignedIn() && get(/databases/$(database)/documents/hauls/$(haulId)).data.ownerId == request.auth.uid;
+        allow list: if isSignedIn() && get(/databases/$(database)/documents/hauls/$(haulId)).data.ownerId == request.auth.uid;
+        
+        allow create: if isSignedIn() && isValidScannedReceipt(incoming())
+          && get(/databases/$(database)/documents/hauls/$(haulId)).data.ownerId == request.auth.uid
+          && get(/databases/$(database)/documents/hauls/$(haulId)).data.status == 'Active';
+          
+        allow delete: if isSignedIn()
+          && get(/databases/$(database)/documents/hauls/$(haulId)).data.ownerId == request.auth.uid
+          && get(/databases/$(database)/documents/hauls/$(haulId)).data.status == 'Active';
+      }
+    }
+    
+    // --- ADMINS ---
+    match /admins/{adminId} {
+      allow read: if isSignedIn();
+      allow write: if isSuperAdmin(); 
+    }
+
+    // --- USERS ---
+    match /users/{userId} {
+      allow get: if isSignedIn() && (request.auth.uid == userId || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isSignedIn() && request.auth.uid == userId 
+        && incoming().email == request.auth.token.email
+        && incoming().createdAt == request.time;
+      allow update: if isSignedIn() && request.auth.uid == userId
+        && incoming().email == existing().email
+        && incoming().createdAt == existing().createdAt;
+    }
+  }
+}

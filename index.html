@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <script>
+      (function() {
+        var originalConsoleError = console.error;
+        console.error = function() {
+          var msg = arguments[0] ? String(arguments[0]) : '';
+          if (msg.includes('WebSocket') || msg.includes('websocket') || msg.includes('WebSocket closed without opened')) {
+            return;
+          }
+          originalConsoleError.apply(console, arguments);
+        };
+        
+        window.addEventListener('unhandledrejection', function(event) {
+          var msg = event.reason ? (event.reason.message || String(event.reason)) : '';
+          if (msg.includes('WebSocket') || msg.includes('websocket') || msg.includes('WebSocket closed without opened')) {
+            event.preventDefault();
+            event.stopPropagation();
+          }
+        });
+        window.addEventListener('error', function(event) {
+          var msg = event.message || '';
+          if (msg.includes('WebSocket') || msg.includes('websocket') || msg.includes('WebSocket closed without opened')) {
+            event.preventDefault();
+            event.stopPropagation();
+          }
+        });
+      })();
+    </script>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="format-detection" content="telephone=no, date=no, email=no, address=no" />
+    <title>Transport Genius</title>
+    <meta property="og:title" content="Transport Genius" />
+    <meta property="og:description" content="Definitive operational database for independent hotshot, transport, and logistics owner-operators." />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+

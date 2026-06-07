@@ -1,0 +1,105 @@
+{
+  "entities": {
+    "Haul": {
+      "title": "Haul/Load Record",
+      "description": "Historical record of a transport job",
+      "type": "object",
+      "properties": {
+        "unitNumber": { "type": "string", "description": "Unit #" },
+        "unitType": { "type": "string", "description": "Type of unit" },
+        "loadNumber": { "type": "string", "description": "Hidden/Optional Load ID" },
+        "pickUpDate": { "type": "string", "format": "date" },
+        "pickUpLocation": { "type": "string" },
+        "deliveryDate": { "type": "string", "format": "date" },
+        "deliveryLocation": { "type": "string" },
+        "totalMiles": { "type": "number" },
+        "loadedMiles": { "type": "number" },
+        "deadheadMiles": { "type": "number" },
+        "ratePerMile": { "type": "number" },
+        "milesPerGallon": { "type": "number" },
+        "loadedMpg": { "type": "number" },
+        "deadheadMpg": { "type": "number" },
+        "scaleWeight": { "type": "number" },
+        "grossWeight": { "type": "number" },
+        "grossRevenue": { "type": "number" },
+        "netProfit": { "type": "number" },
+        "totalOperatingCosts": { "type": "number" },
+        "status": { "type": "string", "enum": ["Active", "Completed"] },
+        "notes": { "type": "string", "description": "Optional user notes for that unit/trip" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["unitNumber", "pickUpDate", "pickUpLocation", "deliveryDate", "deliveryLocation", "totalMiles", "ratePerMile", "scaleWeight", "milesPerGallon"]
+    },
+    "Expense": {
+      "title": "Trip Expense",
+      "description": "Modular expense item associated with a haul",
+      "type": "object",
+      "properties": {
+        "haulId": { "type": "string" },
+        "category": { "type": "string", "enum": ["Fuel", "DEF", "Permits", "Maintenance", "Maintenance/DEF", "Food", "Misc", "Toll"] },
+        "vendor": { "type": "string" },
+        "amount": { "type": "number" },
+        "gallons": { "type": "number" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "receiptUrl": { "type": "string" }
+      },
+      "required": ["haulId", "category", "amount"]
+    },
+    "User": {
+      "title": "User Profile",
+      "description": "Verified user accounts",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string" },
+        "displayName": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "Admin": {
+      "title": "Admin Authorization",
+      "description": "Authorized administrators",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string" },
+        "super": { "type": "boolean" }
+      }
+    },
+    "ScannedReceipt": {
+      "title": "Scanned Receipt Image and Info",
+      "description": "Stores image data URL and main OCR details for scanned receipts",
+      "type": "object",
+      "properties": {
+        "fileName": { "type": "string" },
+        "fileType": { "type": "string" },
+        "dataUrl": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "vendor": { "type": "string" },
+        "amount": { "type": "number" }
+      },
+      "required": ["fileName", "fileType", "dataUrl", "timestamp", "vendor", "amount"]
+    }
+  },
+  "firestore": {
+    "/hauls": {
+      "schema": "Haul",
+      "description": "Collection of all transport jobs"
+    },
+    "/hauls/{haulId}/expenses": {
+      "schema": "Expense",
+      "description": "Subcollection of expenses for a specific haul"
+    },
+    "/hauls/{haulId}/scannedReceipts": {
+      "schema": "ScannedReceipt",
+      "description": "Subcollection of scanned receipts and images for a specific haul"
+    },
+    "/users": {
+        "schema": "User",
+        "description": "Profiles for all authenticated users"
+    },
+    "/admins": {
+        "schema": "Admin",
+        "description": "Authorization map for system administrators"
+    }
+  }
+}
