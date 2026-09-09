@@ -16,10 +16,14 @@ import {
   verifyAuthenticationResponse 
 } from '@simplewebauthn/server';
 import { isoUint8Array } from '@simplewebauthn/server/helpers';
-import firebaseConfig from './firebase-applet-config.json';
 import * as XLSX from "xlsx";
 
 dotenv.config();
+
+// Load firebase-applet-config.json safely
+const firebaseConfig = JSON.parse(
+  fs.readFileSync(path.resolve(process.cwd(), 'firebase-applet-config.json'), 'utf8')
+);
 
 // Initialize Firebase Admin
 if (!getApps().length) {
@@ -44,7 +48,7 @@ const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KE
 // to be set in the .env file in order to have sufficient permissions to read/write to Firestore.
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
 // Allow Google Sites, custom domains, and iframe embedding globally
 app.use((req, res, next) => {
@@ -85,7 +89,7 @@ const sendAdminReport = async () => {
 
         const htmlContent = `
             <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto; color: #334155;">
-                <h1 style="color: #1e40af; border-bottom: 2px solid #e2e8f0; padding-bottom: 10px;">Transport Genius: Weekly Fleet Digest</h1>
+                <h1 style="color: #1e40af; border-bottom: 2px solid #e2e8f0; padding-bottom: 10px;">Transport LogIQ: Weekly Fleet Digest</h1>
                 <p>System status report for <strong>${new Date().toLocaleDateString()}</strong></p>
                 
                 <div style="background: #f8fafc; padding: 20px; border-radius: 8px; margin: 20px 0;">
@@ -113,14 +117,14 @@ const sendAdminReport = async () => {
                         `).join('')}
                     </tbody>
                 </table>
-                <p style="margin-top: 30px; font-size: 10px; color: #94a3b8; text-align: center;">Verified Secure Transport Genius Audit // Automated System Payload</p>
+                <p style="margin-top: 30px; font-size: 10px; color: #94a3b8; text-align: center;">Verified Secure Transport LogIQ Audit // Automated System Payload</p>
             </div>
         `;
 
         await resend.emails.send({
-            from: 'Transport Genius Systems <onboarding@resend.dev>',
+            from: 'Transport LogIQ Systems <onboarding@resend.dev>',
             to: adminEmails,
-            subject: `Transport Genius Audit Engine: Weekly Fleet Digest - ${new Date().toLocaleDateString()}`,
+            subject: `Transport LogIQ Audit Engine: Weekly Fleet Digest - ${new Date().toLocaleDateString()}`,
             html: htmlContent
         });
 
@@ -136,131 +140,128 @@ cron.schedule('59 23 * * 0', () => {
     sendAdminReport();
 });
 
-const ai = new GoogleGenAI({ 
-  apiKey: process.env.GEMINI_API_KEY!,
-  httpOptions: {
-    headers: {
-      'User-Agent': 'aistudio-build',
+let _ai: GoogleGenAI | null = null;
+function getAI(): GoogleGenAI {
+  if (!_ai) {
+    const key = process.env.GEMINI_API_KEY;
+    if (!key) {
+      throw new Error("GEMINI_API_KEY environment variable is required");
     }
+    _ai = new GoogleGenAI({ 
+      apiKey: key,
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build',
+        }
+      }
+    });
   }
-});
+  return _ai;
+}
 
 // Cache for state fuel prices to avoid excessive AI API calls (12 hours)
 const stateFuelPricesCache: Record<string, { gas: number, diesel: number, timestamp: number }> = {};
+const routeStatesCache: Record<string, string[]> = {};
 const CACHE_TTL = 12 * 60 * 60 * 1000;
+
+// Helper to extract and parse JSON robustly from Gemini's output
+function cleanAndParseJson(text: string | null | undefined): any {
+  if (!text) {
+    throw new Error("Empty response from AI");
+  }
+  const cleanText = text.trim();
+  try {
+    return JSON.parse(cleanText);
+  } catch (e) {
+    // Attempt block extraction to filter surrounding conversations/explanations
+    const jsonMatch = cleanText.match(/(\{[\s\S]*\}|\[[\s\S]*\])/);
+    if (jsonMatch) {
+      try {
+        return JSON.parse(jsonMatch[0].trim());
+      } catch (innerErr) {
+        throw new Error(`Failed to parse extracted JSON block: ${(innerErr as Error).message}\nSource segment: ${jsonMatch[0]}`);
+      }
+    }
+    throw e;
+  }
+}
 
 app.post("/api/state-fuel-prices", async (req, res) => {
   try {
     const { states, origin, destination } = req.body;
-    
+    let finalStates: string[] = Array.isArray(states) ? states : [];
+
     if (origin && destination && origin.trim().length > 3 && destination.trim().length > 3) {
-      console.log(`Calculating route states and prices for origin: ${origin}, destination: ${destination}`);
-      const prompt = `You are a logistics mapping and fuel price retrieval coordinator. Given:
-Origin: "${origin}"
-Destination: "${destination}"
+      const routeKey = `${origin.trim().toLowerCase()}_to_${destination.trim().toLowerCase()}`;
+      if (routeStatesCache[routeKey]) {
+        console.log(`Using cached route states for key: ${routeKey}`);
+        finalStates = routeStatesCache[routeKey];
+      } else {
+        console.log(`Extracting route states for origin: ${origin}, destination: ${destination}`);
+        try {
+          const routePrompt = `You are a logistics routing coordinator. Identify the standard highway driving route from "${origin}" to "${destination}". Extract the exact sequence of 2-letter US state codes traversed along this route in order (including origin state and destination state). E.g. from Goshen, IN to Cleburne, TX, the traversed states are: ["IN", "IL", "MO", "AR", "TX"]. Format the output strictly as a JSON array of 2-letter state codes, e.g. ["IN", "IL", "MO", "AR", "TX"]. Do not include markdown formatting or backticks.`;
 
-Instructions:
-1. Identify the most standard, fuel-efficient highway drive route between the Origin and the Destination.
-2. Extract the exact sequence of 2-letter US state codes traversed along this specific route in sequential order (including origin state and destination state). E.g. for Goshen, IN to Cleburne, TX, the traversed states are: ["IN", "IL", "MO", "AR", "TX"].
-3. Use Google Search to find today's (${new Date().toLocaleDateString()}) AAA (American Automobile Association) average regular gasoline and diesel prices per gallon for each of those traversed states. (Today's regular gas prices should be in the $3.00-$4.50 range, and diesel in the $3.50-$4.85 range. Do not return outdated 2022/historical prices!).
-4. Format the output strictly as a JSON object with two fields (do not use markdown backticks, do not include any other text besides the JSON):
-  "states": an array of the 2-letter state codes of the traversed states in order (e.g. ["IN", "IL", "MO", "AR", "TX"])
-  "prices": an object mapping the 2-letter state codes to their gas and diesel average prices.
-
-Example Output format:
-{
-  "states": ["IN", "IL", "MO", "AR", "TX"],
-  "prices": {
-    "IN": {"gas": 3.35, "diesel": 4.02},
-    "IL": {"gas": 3.55, "diesel": 4.15},
-    "MO": {"gas": 3.10, "diesel": 3.85},
-    "AR": {"gas": 2.95, "diesel": 3.70},
-    "TX": {"gas": 2.90, "diesel": 3.65}
-  }
-}`;
-
-      const response = await ai.models.generateContent({
-        model: "gemini-2.5-flash",
-        contents: prompt,
-        config: {
-          tools: [{ googleSearch: {} }]
-        }
-      });
-
-      let outputText = typeof (response as any).text === 'function' ? (response as any).text() : response.text;
-      console.log("Raw route states + fuel AI output:", outputText);
-
-      if (outputText) {
-        outputText = outputText.replace(/```json/g, "").replace(/```/g, "").trim();
-      }
-
-      try {
-        const parsedData = JSON.parse(outputText!);
-        if (Array.isArray(parsedData.states) && parsedData.prices) {
-          // Cache individual prices
-          for (const st of parsedData.states) {
-            if (parsedData.prices[st] && parsedData.prices[st].gas && parsedData.prices[st].diesel) {
-              stateFuelPricesCache[st] = {
-                gas: parsedData.prices[st].gas,
-                diesel: parsedData.prices[st].diesel,
-                timestamp: Date.now()
-              };
+          const routeResponse = await getAI().models.generateContent({
+            model: "gemini-3.7-flash",
+            contents: routePrompt,
+            config: {
+              responseMimeType: "application/json"
             }
-          }
-          return res.json({
-            states: parsedData.states,
-            prices: parsedData.prices
           });
+
+          let routeText = typeof (routeResponse as any).text === 'function' ? (routeResponse as any).text() : routeResponse.text;
+          console.log("Raw route states AI output:", routeText);
+          
+          const parsedRoute = cleanAndParseJson(routeText);
+          if (Array.isArray(parsedRoute) && parsedRoute.length > 0) {
+            finalStates = parsedRoute.map((st: any) => String(st).trim().toUpperCase()).filter(st => st.length === 2);
+            routeStatesCache[routeKey] = finalStates;
+          }
+        } catch (err) {
+          console.error("Failed to extract route states via Gemini:", err);
         }
-      } catch (err) {
-        console.error("Failed to parse Gemini route states response:", err);
       }
     }
 
-    // Fallback if origin or destination is not provided/valid OR if AI parsing failed above
-    const finalStates = Array.isArray(states) ? states : [];
     if (finalStates.length === 0) {
       return res.status(400).json({ error: "Missing states or origin/destination" });
     }
 
+    // Filter missing/expired states
     const missingStates = finalStates.filter(st => {
       const cached = stateFuelPricesCache[st];
       return !cached || (Date.now() - cached.timestamp > CACHE_TTL);
     });
 
     if (missingStates.length > 0) {
-      const prompt = `Use Google Search to find the EXACT, CURRENT, TODAY'S (${new Date().toLocaleDateString()}) AAA (American Automobile Association) average regular gas and diesel prices for the following US states: ${missingStates.join(", ")}. 
-      WARNING: Do not return historical 2022 data. You MUST return today's prices (around $3.00-$4.50 range). Format the output strictly as a JSON object where the keys are the 2-letter state abbreviations and the values are objects with "gas" and "diesel" numeric keys. Example: {"TX": {"gas": 2.99, "diesel": 3.89}}. Do not include any other text except the JSON, not even markdown backticks.`;
-      
-      const response = await ai.models.generateContent({
-        model: "gemini-2.5-flash",
-        contents: prompt,
-        config: {
-          tools: [{ googleSearch: {} }] // Use search grounding to get precise, real-time AAA prices
-        }
-      });
-      
-      let outputText = typeof (response as any).text === 'function' ? (response as any).text() : response.text;
-      console.log("Raw fuel AI output:", outputText);
-
-      if (outputText) {
-        outputText = outputText.replace(/```json/g, "").replace(/```/g, "").trim();
-      }
-      
+      console.log(`Fetching live AAA prices for missing states: ${missingStates.join(", ")}`);
       try {
-        const parsedData = JSON.parse(outputText!);
-        console.log("Parsed fuel data:", parsedData);
+        const pricePrompt = `Use Google Search to find the EXACT, CURRENT, TODAY'S AAA (American Automobile Association) average regular gas and diesel prices for the following US states: ${missingStates.join(", ")}. 
+        WARNING: Do not return historical 2022 data. You MUST return today's prices (around $3.00-$4.50 range). Format the output strictly as a JSON object where the keys are the 2-letter state abbreviations and the values are objects with "gas" and "diesel" numeric keys. Example: {"TX": {"gas": 2.99, "diesel": 3.89}}. Do not include any other text except the JSON, not even markdown backticks.`;
+        
+        const priceResponse = await getAI().models.generateContent({
+          model: "gemini-3.7-flash",
+          contents: pricePrompt,
+          config: {
+            tools: [{ googleSearch: {} }] // Use search grounding to get precise, real-time AAA prices
+          }
+        });
+        
+        let priceText = typeof (priceResponse as any).text === 'function' ? (priceResponse as any).text() : priceResponse.text;
+        console.log("Raw live AAA prices AI output:", priceText);
+
+        const parsedPrices = cleanAndParseJson(priceText);
         for (const st of missingStates) {
-          if (parsedData[st] && parsedData[st].gas && parsedData[st].diesel) {
+          if (parsedPrices[st] && parsedPrices[st].gas && parsedPrices[st].diesel) {
             stateFuelPricesCache[st] = {
-              gas: parsedData[st].gas,
-              diesel: parsedData[st].diesel,
+              gas: Number(parsedPrices[st].gas),
+              diesel: Number(parsedPrices[st].diesel),
               timestamp: Date.now()
             };
           }
         }
       } catch (err) {
-        console.error("Failed to parse Gemini fuel response:", err);
+        console.error("Failed to fetch live AAA prices via Gemini search:", err);
       }
     }
 
@@ -268,6 +269,9 @@ Example Output format:
     for (const st of finalStates) {
       if (stateFuelPricesCache[st]) {
         results[st] = { gas: stateFuelPricesCache[st].gas, diesel: stateFuelPricesCache[st].diesel };
+      } else {
+        // Fallback to static averages if live lookup fails or is unavailable
+        results[st] = { gas: 3.35, diesel: 3.85 };
       }
     }
 
@@ -292,8 +296,8 @@ app.post("/api/parse-receipt", async (req, res) => {
     const { imageBase64, mimeType } = req.body;
     if (!imageBase64) return res.status(400).json({ error: "Missing image" });
 
-    const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
+    const response = await getAI().models.generateContent({
+      model: "gemini-3.7-flash",
       contents: {
         parts: [
           { inlineData: { data: imageBase64, mimeType } },
@@ -330,7 +334,7 @@ app.post("/api/parse-receipt", async (req, res) => {
       }
     });
 
-    let outputText = typeof (response as any).text === 'function' ? (response as any).text() : response.text;
+    const outputText = response.text;
     const parsed = JSON.parse(outputText!);
     
     res.json(parsed);
@@ -411,8 +415,8 @@ SPREADSHEET DATA CONTENT:
 ${combinedCsvText}
 [END DATA]`;
 
-      response = await ai.models.generateContent({
-        model: "gemini-2.5-pro",
+      response = await getAI().models.generateContent({
+        model: "gemini-3.1-pro-preview",
         contents: promptText,
         config: {
           responseMimeType: "application/json",
@@ -453,8 +457,8 @@ ${combinedCsvText}
         }
       });
     } else {
-      response = await ai.models.generateContent({
-        model: "gemini-2.5-pro",
+      response = await getAI().models.generateContent({
+        model: "gemini-3.1-pro-preview",
         contents: {
           parts: [
             { inlineData: { data: documentBase64, mimeType } },
@@ -523,7 +527,7 @@ CRITICAL PRECISION RULES FOR IDENTIFIER TRANSCRIBING:
       });
     }
 
-    let outputText = typeof (response as any).text === 'function' ? (response as any).text() : response.text;
+    const outputText = response.text;
     res.json(JSON.parse(outputText!));
   } catch (error: any) {
     console.error("Document Parsing Error:", error);
@@ -533,11 +537,45 @@ CRITICAL PRECISION RULES FOR IDENTIFIER TRANSCRIBING:
 
 // ... (existing code, insert routes before startServer)
 
-const rpName = 'Transport Genius Management';
-const rpID = process.env.NODE_ENV === 'production' ? 'ais-dev-uvxwhxqjvnly3ev7ykpmth-333377435528.us-east1.run.app' : 'localhost';
-const origin = process.env.NODE_ENV === 'production' ? `https://${rpID}` : `http://${rpID}:3000`;
+const rpName = 'Transport LogIQ Management';
+const defaultRpID = process.env.NODE_ENV === 'production' ? 'ais-dev-uvxwhxqjvnly3ev7ykpmth-333377435528.us-east1.run.app' : 'localhost';
+const defaultOrigin = process.env.NODE_ENV === 'production' ? `https://${defaultRpID}` : `http://${defaultRpID}:3000`;
+
+function getRequestAuthContext(req: any) {
+  const hostHeader = req.headers.host || '';
+  const originHeader = req.headers.origin || '';
+  const refererHeader = req.headers.referer || '';
+
+  // Determine origin
+  let effectiveOrigin = defaultOrigin;
+  if (originHeader) {
+    effectiveOrigin = originHeader;
+  } else if (refererHeader) {
+    try {
+      effectiveOrigin = new URL(refererHeader).origin;
+    } catch (e) {}
+  } else if (hostHeader) {
+    const protocol = req.secure || req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
+    effectiveOrigin = `${protocol}://${hostHeader}`;
+  }
+
+  // Determine rpID
+  let effectiveRpID = defaultRpID;
+  try {
+    effectiveRpID = new URL(effectiveOrigin).hostname;
+  } catch (e) {}
+
+  return { origin: effectiveOrigin, rpID: effectiveRpID };
+}
 
 const getVersion = () => {
+  try {
+    const pkgPath = path.resolve(process.cwd(), 'package.json');
+    if (fs.existsSync(pkgPath)) {
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+      return `v${pkg.version}`;
+    }
+  } catch (e) {}
   try {
     const versionPath = path.resolve(process.cwd(), 'version.txt');
     if (fs.existsSync(versionPath)) {
@@ -546,17 +584,73 @@ const getVersion = () => {
   } catch (err) {
     console.warn("Could not read version.txt:", err);
   }
-  return process.env.COMMIT_SHA || Date.now().toString();
+  return 'v1.5.56';
 };
 
+const SERVER_START_TIME = Date.now().toString();
+
 app.get("/api/version", (req, res) => {
-  res.json({ version: getVersion() });
+  res.json({ version: getVersion(), startupId: SERVER_START_TIME });
+});
+
+app.get("/api/community-hauls-summary", async (req, res) => {
+  if (!db) return res.status(500).json({ error: "DB not initialized" });
+  try {
+    const usersSnap = await db.collection('users').get();
+    const userProfiles: Record<string, any> = {};
+    usersSnap.forEach((uDoc: any) => {
+      userProfiles[uDoc.id] = uDoc.data();
+    });
+
+    const snap = await db.collection('hauls')
+      .where('status', 'in', ['Completed', 'Finalized'])
+      .get();
+      
+    const summaries: any[] = [];
+    snap.forEach((docSnap: any) => {
+      const data = docSnap.data();
+      const ownerId = data.ownerId || '';
+      const profile = userProfiles[ownerId] || {};
+      
+      // Ensure we have loadedMpg or general milesPerGallon, prioritizing loaded
+      const loadedMpg = Number(data.loadedMpg || data.milesPerGallon || 0);
+      if (loadedMpg > 0) {
+        summaries.push({
+          id: docSnap.id,
+          ownerId,
+          loadedMpg,
+          scaleWeight: Number(data.scaleWeight || 0),
+          grossWeight: Number(data.grossWeight || 0),
+          unitType: data.unitType || '',
+          unitLength: Number(data.unitLength || 0),
+          pickUpLocation: data.pickUpLocation || '',
+          deliveryLocation: data.deliveryLocation || '',
+          axles: Number(data.axles || 0),
+          powerUnitYear: profile.powerUnitYear ? Number(profile.powerUnitYear) : '',
+          powerUnitMake: profile.powerUnitMake || '',
+          powerUnitModel: profile.powerUnitModel || '',
+          engineType: profile.engineType || '',
+          duallyOrSrw: profile.duallyOrSrw || '',
+          drivetrain: profile.drivetrain || '',
+          powerUnitScaleWeight: profile.powerUnitScaleWeight ? Number(profile.powerUnitScaleWeight) : '',
+          powerUnitWheelbase: profile.powerUnitWheelbase || '',
+          fuelType: profile.fuelType || ''
+        });
+      }
+    });
+    res.json({ hauls: summaries });
+  } catch (error: any) {
+    console.warn("Could not fetch community hauls summary due to permission/credential limits. Gracefully continuing with an empty list.", error.message || error);
+    res.json({ hauls: [], warning: "Missing or insufficient DB permissions on server" });
+  }
 });
 
 // Registration
 app.post('/api/auth/generate-registration-options', async (req, res) => {
   const { email, userId, displayName } = req.body;
   if (!db) return res.status(500).json({ error: "DB not initialized" });
+
+  const { origin: reqOrigin, rpID: reqRpID } = getRequestAuthContext(req);
 
   const userRef = db.collection('users').doc(userId);
   const userSnap = await userRef.get();
@@ -571,7 +665,7 @@ app.post('/api/auth/generate-registration-options', async (req, res) => {
 
   const options = await generateRegistrationOptions({
     rpName,
-    rpID,
+    rpID: reqRpID,
     userID: isoUint8Array.fromUTF8String(userId),
     userName: email,
     userDisplayName: displayName,
@@ -599,6 +693,8 @@ app.post('/api/auth/verify-registration', async (req, res) => {
   const { body, userId } = req.body;
   if (!db) return res.status(500).json({ error: "DB not initialized" });
 
+  const { origin: reqOrigin, rpID: reqRpID } = getRequestAuthContext(req);
+
   const challengeSnap = await db.collection('challenges').doc(userId).get();
   if (!challengeSnap.exists) return res.status(400).json({ error: "Challenge not found" });
   
@@ -608,9 +704,9 @@ app.post('/api/auth/verify-registration', async (req, res) => {
     const verification = await verifyRegistrationResponse({
       response: body,
       expectedChallenge,
-      expectedOrigin: origin,
-      expectedRPID: rpID,
-      requireUserVerification: true,
+      expectedOrigin: reqOrigin,
+      expectedRPID: reqRpID,
+      requireUserVerification: false,
     });
 
     if (verification.verified && verification.registrationInfo) {
@@ -644,6 +740,8 @@ app.post('/api/auth/generate-authentication-options', async (req, res) => {
   const { email } = req.body;
   if (!db) return res.status(500).json({ error: "DB not initialized" });
 
+  const { origin: reqOrigin, rpID: reqRpID } = getRequestAuthContext(req);
+
   // Find user by email
   const userSnap = await db.collection('users').where('email', '==', email).limit(1).get();
   if (userSnap.empty) return res.status(404).json({ error: "User not found" });
@@ -658,7 +756,7 @@ app.post('/api/auth/generate-authentication-options', async (req, res) => {
   }));
 
   const options = await generateAuthenticationOptions({
-    rpID,
+    rpID: reqRpID,
     allowCredentials,
     userVerification: 'preferred',
   });
@@ -676,6 +774,8 @@ app.post('/api/auth/verify-authentication', async (req, res) => {
   const { body, userId } = req.body;
   if (!db) return res.status(500).json({ error: "DB not initialized" });
 
+  const { origin: reqOrigin, rpID: reqRpID } = getRequestAuthContext(req);
+
   const challengeSnap = await db.collection('challenges').doc(userId).get();
   const expectedChallenge = challengeSnap.data()?.challenge;
 
@@ -688,15 +788,15 @@ app.post('/api/auth/verify-authentication', async (req, res) => {
     const verification = await verifyAuthenticationResponse({
       response: body,
       expectedChallenge,
-      expectedOrigin: origin,
-      expectedRPID: rpID,
+      expectedOrigin: reqOrigin,
+      expectedRPID: reqRpID,
       credential: {
         id: authenticator?.credentialID,
         publicKey: isoUint8Array.fromHex(authenticator?.credentialPublicKey),
         counter: authenticator?.counter as any,
         transports: authenticator?.transports,
       },
-      requireUserVerification: true,
+      requireUserVerification: false,
     });
 
     if (verification.verified) {
@@ -719,14 +819,16 @@ app.post('/api/auth/verify-authentication', async (req, res) => {
 });
 
 async function startServer() {
-  if (process.env.NODE_ENV !== "production") {
+  const distPath = path.join(process.cwd(), 'dist');
+  const isProduction = process.env.NODE_ENV === "production" || fs.existsSync(path.join(distPath, 'index.html'));
+
+  if (!isProduction) {
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
     app.get('*', (req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));

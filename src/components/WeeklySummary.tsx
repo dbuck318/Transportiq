@@ -49,6 +49,16 @@ export default function WeeklySummary({ hauls = [], compact, timeRange = '7d', o
   compareEndDate.setHours(23, 59, 59, 999);
 
   const filteredHauls = (hauls || []).filter(h => {
+    // Filter out empty/blank hauls (drafts or invalid entries that lack identifying info and metrics)
+    const hasNoInfo = (!h.unitNumber || h.unitNumber.trim() === '') &&
+                      (!h.loadNumber || h.loadNumber.trim() === '') &&
+                      (!h.customerName || h.customerName.trim() === '') &&
+                      (Number(h.grossRevenue || 0) === 0) &&
+                      (Number(h.totalMiles || 0) === 0) &&
+                      (Number(h.loadedMiles || 0) === 0);
+    
+    if (hasNoInfo) return false;
+
     const rawDate = safeParseDate(h.deliveryDate) || safeParseDate(h.pickUpDate);
     
     if (!rawDate) {
@@ -187,6 +197,9 @@ export default function WeeklySummary({ hauls = [], compact, timeRange = '7d', o
           <div>
             <p className="text-xs text-slate-500 font-medium mb-1">{labelPrefix} Paid Mileage</p>
             <p className="text-2xl font-bold text-slate-900">{totalMiles.toLocaleString()} <span className="text-sm font-normal text-slate-400 ml-1">MI</span></p>
+            <div className="mt-2.5 text-[11px] text-slate-400 font-normal border-t border-slate-100 pt-2.5">
+              Avg. Rate: <span className="font-semibold text-slate-700">${(totalMiles > 0 ? (grossRevenue / totalMiles) : 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}/mi</span>
+            </div>
           </div>
         </div>
 
@@ -202,6 +215,9 @@ export default function WeeklySummary({ hauls = [], compact, timeRange = '7d', o
           <div>
             <p className="text-xs text-slate-500 font-medium mb-1">{labelPrefix} Expenses</p>
             <p className="text-2xl font-bold text-slate-900">${totalCosts.toLocaleString(undefined, { minimumFractionDigits: 2 })}</p>
+            <div className="mt-2.5 text-[11px] text-slate-400 font-normal border-t border-slate-100 pt-2.5">
+              Expenses: <span className="font-semibold text-slate-700">${(totalMiles > 0 ? (totalCosts / totalMiles) : 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}/mi</span>
+            </div>
           </div>
         </div>
 
@@ -219,6 +235,9 @@ export default function WeeklySummary({ hauls = [], compact, timeRange = '7d', o
             <p className={`text-2xl font-bold ${netProfit >= 0 ? 'text-green-600' : 'text-red-500'}`}>
               ${netProfit.toLocaleString(undefined, { minimumFractionDigits: 2 })}
             </p>
+            <div className="mt-2.5 text-[11px] text-slate-400 font-normal border-t border-slate-100 pt-2.5">
+              Net Profit: <span className={`font-semibold ${netProfit >= 0 ? 'text-green-600' : 'text-red-500'}`}>${(totalMiles > 0 ? (netProfit / totalMiles) : 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}/mi</span>
+            </div>
           </div>
         </div>
       </div>

@@ -37,10 +37,11 @@ export default function Login() {
         displayName: user.displayName || 'Operator',
         photoURL: user.photoURL || '',
         createdAt: serverTimestamp(),
-        lastLogin: serverTimestamp()
+        lastLogin: serverTimestamp(),
+        lastActive: serverTimestamp()
       });
     } else {
-      await setDoc(userRef, { lastLogin: serverTimestamp() }, { merge: true });
+      await setDoc(userRef, { lastLogin: serverTimestamp(), lastActive: serverTimestamp() }, { merge: true });
     }
   };
 

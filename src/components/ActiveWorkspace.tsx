@@ -1,14 +1,45 @@
-import { useEffect, useState, ChangeEvent, useRef } from "react";
+import { useEffect, useState, ChangeEvent, useRef, useMemo } from "react";
 import { db, auth, handleFirestoreError, OperationType } from "../lib/firebase";
 import { collection, query, where, onSnapshot, addDoc, updateDoc, doc, serverTimestamp, deleteDoc, getDoc } from "firebase/firestore";
 import { Haul, Expense, OCRResult, ScannedReceipt } from "../types";
-import { X, Camera, Plus, Trash2, Fuel, Sandwich, Wrench, Receipt, AlertCircle, CreditCard, UploadCloud, TrendingUp, Droplet, Folder, FileText, FolderOpen, Eye, ChevronDown, ChevronUp, UtensilsCrossed, CheckCircle, Loader2 } from "lucide-react";
+import { X, Camera, Plus, Trash2, Fuel, Sandwich, Wrench, Receipt, AlertCircle, CreditCard, UploadCloud, TrendingUp, Droplet, Folder, FileText, FolderOpen, Eye, ChevronDown, ChevronUp, UtensilsCrossed, CheckCircle, Loader2, Info } from "lucide-react";
 import { motion } from "motion/react";
-import { calculateTotals } from "../lib/calculations";
+import { calculateTotals, parseCleanWeight } from "../lib/calculations";
 import { parseFuelCardCSV } from "../lib/fuelCardParsers";
 import { formatForInput } from "../lib/dateUtils";
 import CityAutocomplete from "./CityAutocomplete";
 import { useMapsLibrary } from '@vis.gl/react-google-maps';
+
+const PickupTruckIcon = ({ className = "w-4 h-4 shrink-0" }: { className?: string }) => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+    <path d="M3 10h4l2.5-3.5h5L17 10h4v6h-2a3 3 0 0 1-6 0H9a3 3 0 0 1-6 0H2v-3a3 3 0 0 1 1-3z" />
+    <circle cx="6" cy="16" r="2.5" fill="currentColor" fillOpacity="0.1" />
+    <circle cx="16" cy="16" r="2.5" fill="currentColor" fillOpacity="0.1" />
+    <path d="M13.5 6.5h-4" />
+    <path d="M9 10h5.5" />
+  </svg>
+);
+
+const TireWheelIcon = ({ className = "w-4 h-4 shrink-0" }: { className?: string }) => (
+  <svg viewBox="0 0 24 24" className={className} fill="none" xmlns="http://www.w3.org/2000/svg">
+    {/* Outer Black Rubber Tire */}
+    <circle cx="12" cy="12" r="10" fill="#1e293b" stroke="#0f172a" strokeWidth="1.5" />
+    <circle cx="12" cy="12" r="7.5" fill="#334155" stroke="#1e293b" strokeWidth="0.75" />
+    
+    {/* Treads on the outer tire */}
+    <path d="M12 2v1.5M12 20.5v1.5M2 12h1.5M20.5 12h1.5M4.93 4.93l1.06 1.06M18.01 18.01l1.06 1.06M4.93 19.07l1.06-1.06M18.01 5.99l1.06-1.06" stroke="#475569" strokeWidth="0.75" strokeLinecap="round" />
+
+    {/* Inner Generic Grey Wheel / Rim */}
+    <circle cx="12" cy="12" r="5.5" fill="#cbd5e1" stroke="#94a3b8" strokeWidth="1" />
+    
+    {/* Wheel Details / Spokes */}
+    <circle cx="12" cy="12" r="2.2" fill="#94a3b8" stroke="#64748b" strokeWidth="0.75" />
+    {/* Center cap / Lug nuts */}
+    <circle cx="12" cy="12" r="1" fill="#475569" />
+    {/* Radial spoke lines to give a mechanical wheel texture */}
+    <path d="M12 6.5v2M12 15.5v2M6.5 12h2M15.5 12h2" stroke="#64748b" strokeWidth="0.75" strokeLinecap="round" />
+  </svg>
+);
 
 interface Props {
   key?: string | null;
@@ -16,6 +47,7 @@ interface Props {
   onClose: () => void;
   customFolders?: string[];
   onUpdateFolders?: (folders: string[]) => void;
+  operatorType?: string | null;
 }
 
 const STATE_FUEL_PRICES: Record<string, { gas: number, diesel: number }> = {
@@ -45,6 +77,45 @@ export function extractStateCode(locationName: string): string | null {
   return match ? match[1] : null;
 }
 
+export const FALLBACK_PLATFORM_HAULS: any[] = [];
+
+export function parseLegacyUnit(unitTypeStr: string | undefined): { length: number | null, type: string | null } {
+  if (!unitTypeStr) return { length: null, type: null };
+  const str = unitTypeStr.trim();
+  
+  const validTypes = ["Travel Trailer", "Fifth Wheel", "GN fifth Wheel", "Park/Destination Model", "Cargo Trailer"];
+  if (validTypes.includes(str)) {
+    return { length: null, type: str };
+  }
+  
+  const match = str.match(/^(\d+)([FTGftg])$/);
+  if (match) {
+    const length = parseInt(match[1], 10);
+    const suffix = match[2].toUpperCase();
+    let type = "";
+    if (suffix === 'T') type = "Travel Trailer";
+    else if (suffix === 'F') type = "Fifth Wheel";
+    else if (suffix === 'G') type = "Park/Destination Model";
+    return { length, type };
+  }
+  
+  return { length: null, type: str || null };
+}
+
+export function getNormalizedUnitProperties(h: any) {
+  const rawType = (h?.unitType || '').trim();
+  const rawLength = Number(h?.unitLength || 0);
+  
+  const parsed = parseLegacyUnit(rawType);
+  const finalType = parsed.type || rawType || 'Travel Trailer';
+  const finalLength = rawLength > 0 ? rawLength : (parsed.length || 0);
+  
+  return {
+    unitType: finalType,
+    unitLength: finalLength
+  };
+}
+
 export function getExpectedVehicleMpg(userProfile: any, localHaul: any, traversedStates: string[] = []) {
   let isDiesel = (userProfile?.fuelType || "Diesel") === "Diesel";
   const engineLower = (userProfile?.engineType || "").toLowerCase();
@@ -57,7 +128,6 @@ export function getExpectedVehicleMpg(userProfile: any, localHaul: any, traverse
 
   const baseExpectedMpg = isDiesel ? 10.5 : 8.0; 
 
-  
   let duallyMpgAdjustment = 0;
   if (userProfile?.duallyOrSrw === "SRW") { duallyMpgAdjustment = 0; }
   else if (userProfile?.duallyOrSrw === "DRW") { duallyMpgAdjustment = isDiesel ? -0.8 : -0.5; }
@@ -68,28 +138,48 @@ export function getExpectedVehicleMpg(userProfile: any, localHaul: any, traverse
   let drivetrainAdjustment = 0;
   if (userProfile?.drivetrain === "4x4") { drivetrainAdjustment = isDiesel ? -0.5 : -0.4; }
   
-  const scaleWeightVal = Number(localHaul.scaleWeight || 0);
+  // RV Multi Haul & Hot Shot dynamic weight & length mapping
+  let scaleWeightVal = parseCleanWeight(localHaul?.scaleWeight);
+  let totalLength = 0;
+  
+  const operatorType = localHaul?.operatorType || userProfile?.operatorType || "RV Tow Away";
+  
+  if (operatorType === 'RV Multi Haul') {
+    let w1 = parseCleanWeight(localHaul?.scaleWeight);
+    let w2 = parseCleanWeight(localHaul?.scaleWeight2);
+    let w3 = parseCleanWeight(localHaul?.scaleWeight3);
+    scaleWeightVal = w1 + w2 + w3;
+
+    let l1 = Number(localHaul?.unitLength || 0);
+    let l2 = Number(localHaul?.unitLength2 || 0);
+    let l3 = Number(localHaul?.unitLength3 || 0);
+    totalLength = l1 + l2 + l3;
+  } else if (operatorType === 'Hot Shot') {
+    scaleWeightVal = parseCleanWeight(localHaul?.grossWeight || localHaul?.scaleWeight); // Hot shot weight is stored in Load Weight / grossWeight
+    const normProps = getNormalizedUnitProperties(localHaul);
+    totalLength = normProps.unitLength;
+  } else {
+    const normProps = getNormalizedUnitProperties(localHaul);
+    totalLength = normProps.unitLength;
+  }
+
   let weightAdjustment = 0;
   if (scaleWeightVal > 0) {
     weightAdjustment = -((Math.max(0, scaleWeightVal - 5000)) / 1000) * (isDiesel ? 0.15 : 0.20);
   } else {
-    // Default penalty assuming a typical 8,000 lb trailer
     weightAdjustment = -((8000 - 5000) / 1000) * (isDiesel ? 0.15 : 0.20);
   }
 
-  // Adjust for power unit scale weight if provided
   let powerUnitWeightAdjustment = 0;
-  const powerUnitScaleWeight = Number(userProfile?.powerUnitScaleWeight || 0);
+  const powerUnitScaleWeight = parseCleanWeight(userProfile?.powerUnitScaleWeight);
   if (powerUnitScaleWeight > 0) {
-    // Reference unladen baseline is ~7,500 lbs
-    // Adjust +/- MPG for every 500 lbs deviating from 7500
     powerUnitWeightAdjustment = -((powerUnitScaleWeight - 7500) / 500) * (isDiesel ? 0.10 : 0.15);
   }
 
   let terrainAdjustment = 0;
   if (traversedStates.length > 0) {
     const mountainStates = ["CO", "UT", "WY", "ID", "MT", "WA", "OR", "CA", "NV", "NM", "AZ"];
-    const plainsStates = ["KS", "NE", "SD", "ND", "OK", "IA", "TX"]; // Higher wind resistance
+    const plainsStates = ["KS", "NE", "SD", "ND", "OK", "IA", "TX"]; 
 
     let mtCount = 0;
     let plainsCount = 0;
@@ -98,23 +188,511 @@ export function getExpectedVehicleMpg(userProfile: any, localHaul: any, traverse
       if (plainsStates.includes(st)) plainsCount++;
     });
 
-    if (mtCount > 0) terrainAdjustment += -(0.3 * mtCount); // Elevation penalty
-    if (plainsCount > 0) terrainAdjustment += -(0.15 * plainsCount); // Head/cross wind penalty
+    if (mtCount > 0) terrainAdjustment += -(0.3 * mtCount); 
+    if (plainsCount > 0) terrainAdjustment += -(0.15 * plainsCount); 
+  }
+
+  // Aerodynamic drag based on Unit Type
+  const normProps = getNormalizedUnitProperties(localHaul);
+  let aeroAdjustment = 0;
+  if (operatorType === 'Hot Shot') {
+    aeroAdjustment = -0.2; // LTL Freight cargo flatbed/deck is lower drag profile than travel trailers
+  } else {
+    if (normProps.unitType === "Travel Trailer") {
+      aeroAdjustment = -0.4;
+    } else if (normProps.unitType === "Fifth Wheel" || normProps.unitType === "GN fifth Wheel") {
+      aeroAdjustment = 0.0;
+    } else if (normProps.unitType === "Park/Destination Model") {
+      aeroAdjustment = -1.2;
+    } else if (normProps.unitType === "Cargo Trailer") {
+      aeroAdjustment = -0.6;
+    }
+  }
+
+  // Length drag and skin friction penalty
+  let lengthAdjustment = 0;
+  if (totalLength > 0) {
+    lengthAdjustment = -Math.max(0, (totalLength - 20) * 0.03);
+  }
+
+  // Rolling resistance axle count adjustments (1, 2, or 3 axles)
+  let axleAdjustment = 0;
+  const axlesCount = Number(localHaul?.axles || 2);
+  if (axlesCount === 1) {
+    axleAdjustment = 0.0;
+  } else if (axlesCount === 2) {
+    axleAdjustment = -0.3;
+  } else if (axlesCount === 3) {
+    axleAdjustment = -0.7;
+  }
+
+  // Tire rolling resistance adjustments from internet/industry verified baselines (Michelin/DiscountTire)
+  let tireAdjustment = 0;
+  const tireType = (userProfile?.tireType || "").toLowerCase();
+  const tireMake = (userProfile?.tireMake || "").toLowerCase();
+  const tireSize = (userProfile?.tireSize || "").toLowerCase();
+  
+  if (tireType.includes("mud") || tireType.includes("m/t")) {
+    tireAdjustment = -0.4;
+  } else if (tireType.includes("all terrain") || tireType.includes("a/t")) {
+    tireAdjustment = -0.2;
+  } else if (tireType.includes("highway") || tireType.includes("h/t") || tireType.includes("season")) {
+    tireAdjustment = 0.15;
+  } else if (tireType.includes("eco") || tireType.includes("low rolling")) {
+    tireAdjustment = 0.3;
+  }
+  if (tireMake.includes("michelin") || tireMake.includes("continental") || tireMake.includes("bridgestone") || tireMake.includes("goodyear")) {
+    tireAdjustment += 0.1;
+  }
+  if (tireSize) {
+    if (tireSize.includes("35") || tireSize.includes("37") || tireSize.includes("315") || tireSize.includes("295") || tireSize.includes("325")) {
+      tireAdjustment -= 0.15;
+    } else if (tireSize.includes("225") || tireSize.includes("235") || tireSize.includes("245")) {
+      tireAdjustment += 0.05;
+    }
+  }
+
+  // Trailer specific aero drag adjustments (Airstream, Scamp, casita, or customized specs)
+  let trailerAdjustment = 0;
+  const trailerMake = (userProfile?.trailerMake || "").toLowerCase();
+  const trailerModel = (userProfile?.trailerModel || "").toLowerCase();
+  
+  if (trailerMake.includes("airstream")) {
+    trailerAdjustment = 0.45;
+  } else if (trailerModel.includes("aero") || trailerMake.includes("scamp") || trailerMake.includes("casita")) {
+    trailerAdjustment = 0.25;
   }
   
-  const expectedMpg = baseExpectedMpg + duallyMpgAdjustment + profileYearAdjustment + drivetrainAdjustment + weightAdjustment + powerUnitWeightAdjustment + terrainAdjustment;
-  const finalMpg = Math.min(14.0, Math.max(3.0, Number(expectedMpg.toFixed(1))));
-  return { expectedMpg: finalMpg, weightAdjustment, scaleWeightVal, terrainAdjustment };
+  // NOTE: tireAdjustment is excluded here so Calibrated Performance Target & 100 Target do not consider or reflect it.
+  const expectedMpg = baseExpectedMpg + duallyMpgAdjustment + profileYearAdjustment + drivetrainAdjustment + weightAdjustment + powerUnitWeightAdjustment + terrainAdjustment + aeroAdjustment + lengthAdjustment + axleAdjustment + trailerAdjustment;
+  
+  let maxPhysicalMpgCap = 16.0;
+  if (!isDiesel) {
+    if (scaleWeightVal >= 15000) maxPhysicalMpgCap = 5.5;
+    else if (scaleWeightVal >= 12000) maxPhysicalMpgCap = 6.8;
+    else if (scaleWeightVal >= 9000) maxPhysicalMpgCap = 8.0;
+    else if (scaleWeightVal >= 6000) maxPhysicalMpgCap = 9.2;
+    else if (scaleWeightVal >= 3000) maxPhysicalMpgCap = 11.0;
+    else maxPhysicalMpgCap = 13.0;
+  } else {
+    if (scaleWeightVal >= 15000) maxPhysicalMpgCap = 7.5;
+    else if (scaleWeightVal >= 12000) maxPhysicalMpgCap = 9.0;
+    else if (scaleWeightVal >= 9000) maxPhysicalMpgCap = 10.5;
+    else if (scaleWeightVal >= 6000) maxPhysicalMpgCap = 12.0;
+    else if (scaleWeightVal >= 3000) maxPhysicalMpgCap = 14.0;
+    else maxPhysicalMpgCap = 16.0;
+  }
+
+  const finalMpg = Math.min(maxPhysicalMpgCap, Math.max(3.0, Number(expectedMpg.toFixed(1))));
+  return { expectedMpg: finalMpg, weightAdjustment, scaleWeightVal, terrainAdjustment, aeroAdjustment, lengthAdjustment, axleAdjustment, tireAdjustment, trailerAdjustment };
 }
 
-const ExpenseAmountInput = ({ amount, onChange }: { amount: number, onChange: (val: number) => void }) => (
-  <input 
-      type="number"
-      value={amount || ""}
-      onChange={(e) => onChange(Number(e.target.value))}
+export function getIndustryAvgMpg(userProfile: any, localHaul: any, traversedStates: string[] = [], communityAvgMpg?: number, peersAvgSimilarMpg?: number) {
+  let isDiesel = (userProfile?.fuelType || 'Diesel') === 'Diesel';
+  const engineLower = (userProfile?.engineType || '').toLowerCase();
+  if (engineLower.includes('diesel')) {
+    isDiesel = true;
+  } else if (engineLower.includes('gas') || engineLower.includes('hemi') || engineLower.includes('vortec') || engineLower.includes('godzilla')) {
+    isDiesel = false;
+  }
+
+  // Base MPG standard towing average pulled from DOE (Department of Energy) & EPA vehicle efficiency datasets:
+  // Standard towing fuel consumption rate under 55mph-65mph ranges from 7.0 - 11.0 MPG.
+  // 10.0 MPG for standard Diesel, 7.5 MPG for standard Gas
+  const baseStandardMpg = isDiesel ? 10.0 : 7.5;
+
+  // 1. Scale Weight Effect (Unit being hauled) using parseCleanWeight
+  const scaleWeightVal = parseCleanWeight(localHaul?.scaleWeight);
+  let weightCorrection = 0;
+  if (scaleWeightVal > 0) {
+    weightCorrection = -((Math.max(0, scaleWeightVal - 5000)) / 1000) * (isDiesel ? 0.15 : 0.20);
+  } else {
+    // Standard unladen correction if not entered
+    weightCorrection = -((7500 - 5000) / 1000) * (isDiesel ? 0.15 : 0.20);
+  }
+
+  // 2. Terrain & Route Elevation Corrections (Federal highway steepness grading formulas):
+  let terrainCorrection = 0;
+  if (traversedStates.length > 0) {
+    const mountainStates = ["CO", "UT", "WY", "ID", "MT", "WA", "OR", "CA", "NV", "NM", "AZ"];
+    const plainsStates = ["KS", "NE", "SD", "ND", "OK", "IA", "TX"]; // Severe wind drag gradients
+    
+    let mtCount = 0;
+    let plainsCount = 0;
+    traversedStates.forEach(st => {
+      if (mountainStates.includes(st)) mtCount++;
+      if (plainsStates.includes(st)) plainsCount++;
+    });
+
+    if (mtCount > 0) terrainCorrection += -(0.35 * mtCount);
+    if (plainsCount > 0) terrainCorrection += -(0.18 * plainsCount);
+  }
+
+  // 3. Equipment specification drag adjustments:
+  let equipmentCorrection = 0;
+  if (userProfile?.duallyOrSrw === 'DRW') {
+    equipmentCorrection += isDiesel ? -0.8 : -0.5;
+  }
+  if (userProfile?.drivetrain === '4x4') {
+    equipmentCorrection += isDiesel ? -0.5 : -0.4;
+  }
+
+  const adjustedIndustryBase = baseStandardMpg + weightCorrection + terrainCorrection + equipmentCorrection;
+
+  // 4. Grounded with User Logs:
+  // Blend actual user historical metrics or peer historical metrics to reflect driving conditions.
+  // 60% weight on theoretical internet DOE curve, 40% weight on highly-matched peer logs (filtered by terrain and scale weight)
+  let finalIndustryMpg = adjustedIndustryBase;
+  if (peersAvgSimilarMpg && peersAvgSimilarMpg > 0) {
+    finalIndustryMpg = (adjustedIndustryBase * 0.60) + (peersAvgSimilarMpg * 0.40);
+  } else if (communityAvgMpg && communityAvgMpg > 0) {
+    finalIndustryMpg = (adjustedIndustryBase * 0.70) + (communityAvgMpg * 0.30);
+  }
+
+  // Apply real-world physical ceilings for expected towing MPG based on hauling weight
+  let maxPhysicalMpgCap = 16.0;
+  if (!isDiesel) {
+    if (scaleWeightVal >= 15000) maxPhysicalMpgCap = 5.5;
+    else if (scaleWeightVal >= 12000) maxPhysicalMpgCap = 6.8;
+    else if (scaleWeightVal >= 9000) maxPhysicalMpgCap = 8.0;
+    else if (scaleWeightVal >= 6000) maxPhysicalMpgCap = 9.2;
+    else if (scaleWeightVal >= 3000) maxPhysicalMpgCap = 11.0;
+    else maxPhysicalMpgCap = 13.0;
+  } else {
+    if (scaleWeightVal >= 15000) maxPhysicalMpgCap = 7.5;
+    else if (scaleWeightVal >= 12000) maxPhysicalMpgCap = 9.0;
+    else if (scaleWeightVal >= 9000) maxPhysicalMpgCap = 10.5;
+    else if (scaleWeightVal >= 6000) maxPhysicalMpgCap = 12.0;
+    else if (scaleWeightVal >= 3000) maxPhysicalMpgCap = 14.0;
+    else maxPhysicalMpgCap = 16.0;
+  }
+
+  return Math.min(maxPhysicalMpgCap, Math.max(4.0, Number(finalIndustryMpg.toFixed(1))));
+}
+
+export function getRegisteredUserSimilarAvgMpg(
+  allPlatformCompletedHauls: any[], 
+  userProfile: any, 
+  localHaul: any
+) {
+  if (!allPlatformCompletedHauls || !Array.isArray(allPlatformCompletedHauls) || allPlatformCompletedHauls.length === 0) return 0;
+
+  // Enrich items with user profile if they belong to current user
+  const enrichedList = allPlatformCompletedHauls
+    .filter(Boolean)
+    .map(h => {
+      const isCurrentUser = h.ownerId && userProfile && (h.ownerId === userProfile.uid || h.ownerId === userProfile.id);
+      if (isCurrentUser || !h.powerUnitMake) {
+        return {
+          ...h,
+          powerUnitYear: h.powerUnitYear || (userProfile?.powerUnitYear ? Number(userProfile.powerUnitYear) : ''),
+          powerUnitMake: h.powerUnitMake || userProfile?.powerUnitMake || '',
+          powerUnitModel: h.powerUnitModel || userProfile?.powerUnitModel || '',
+          engineType: h.engineType || userProfile?.engineType || '',
+          duallyOrSrw: h.duallyOrSrw || userProfile?.duallyOrSrw || 'SRW',
+          drivetrain: h.drivetrain || userProfile?.drivetrain || '',
+          powerUnitScaleWeight: h.powerUnitScaleWeight || (userProfile?.powerUnitScaleWeight ? Number(userProfile.powerUnitScaleWeight) : ''),
+          powerUnitWheelbase: h.powerUnitWheelbase || userProfile?.powerUnitWheelbase || '',
+          fuelType: h.fuelType || userProfile?.fuelType || ''
+        };
+      }
+      return h;
+    });
+
+  // Filter ONLY items with valid loaded MPG to prevent average dilution and include only meaningful entries
+  const validMpgList = enrichedList.filter(h => h && (Number(h.loadedMpg || h.milesPerGallon || 0) > 0));
+  if (validMpgList.length === 0) return 0;
+
+  // Extract current user attributes to match against
+  const userMake = (userProfile?.powerUnitMake || '').toLowerCase().trim();
+  const userModel = (userProfile?.powerUnitModel || '').toLowerCase().trim();
+  const userDually = (userProfile?.duallyOrSrw || 'SRW').toLowerCase();
+  const userEngine = (userProfile?.engineType || '').toLowerCase().trim();
+  const userWheelbase = (userProfile?.powerUnitWheelbase || 'LWB').toLowerCase();
+  const userPuScaleWeight = Number(userProfile?.powerUnitScaleWeight || 0);
+
+  const curScaleWeight = Number(localHaul?.scaleWeight || 0);
+  const curAxles = Number(localHaul?.axles || 0);
+
+  // Helper matching functions
+  const isSimilarMake = (item: any) => {
+    if (!item) return false;
+    const itemMake = (item.powerUnitMake || '').toLowerCase().trim();
+    if (!userMake || !itemMake) return true;
+    return itemMake === userMake;
+  };
+
+  const isDuallyMatch = (item: any) => {
+    if (!item) return false;
+    const itemDually = (item.duallyOrSrw || 'SRW').toLowerCase();
+    return itemDually === userDually;
+  };
+
+  const isSimilarEngine = (item: any) => {
+    if (!item) return false;
+    const itemEngine = (item.engineType || '').toLowerCase().trim();
+    if (!userEngine || !itemEngine) return true;
+    return itemEngine.includes(userEngine) || userEngine.includes(itemEngine);
+  };
+
+  const isSimilarPuWeight = (item: any) => {
+    if (!item) return false;
+    const itemPuWeight = Number(item.powerUnitScaleWeight || 0);
+    if (userPuScaleWeight <= 0 || itemPuWeight <= 0) return true;
+    return Math.abs(itemPuWeight - userPuScaleWeight) <= 2500;
+  };
+
+  const isWheelbaseMatch = (item: any) => {
+    if (!item) return false;
+    const itemWheelbase = (item.powerUnitWheelbase || 'LWB').toLowerCase();
+    return itemWheelbase === userWheelbase;
+  };
+
+  const isSimilarTowedWeight = (item: any) => {
+    if (!item) return false;
+    const itemWeight = Number(item.scaleWeight || 0);
+    if (curScaleWeight <= 0 || itemWeight <= 0) return true;
+    return Math.abs(itemWeight - curScaleWeight) <= 4500;
+  };
+
+  const isAxlesMatch = (item: any) => {
+    if (!item) return false;
+    const itemAxles = Number(item.axles || 0);
+    if (curAxles <= 0 || itemAxles <= 0) return true;
+    return itemAxles === curAxles;
+  };
+
+  // Run filtering on validMpgList with fallback tiers
+  // Tier 1: Perfect match (Make + dually/srw + engine + wheelbase + axles + scale weight + power unit scale weight)
+  let matched = validMpgList.filter(item => 
+    isSimilarMake(item) &&
+    isDuallyMatch(item) &&
+    isSimilarEngine(item) &&
+    isWheelbaseMatch(item) &&
+    isSimilarPuWeight(item) &&
+    isSimilarTowedWeight(item) &&
+    isAxlesMatch(item)
+  );
+
+  // Tier 2: Match Make + dually + wheelbase + axles + scale weight
+  if (matched.length === 0) {
+    matched = validMpgList.filter(item => 
+      isSimilarMake(item) &&
+      isDuallyMatch(item) &&
+      isWheelbaseMatch(item) &&
+      isAxlesMatch(item) &&
+      isSimilarTowedWeight(item)
+    );
+  }
+
+  // Tier 3: Loose Match Make + dually + axles
+  if (matched.length === 0) {
+    matched = validMpgList.filter(item => 
+      isSimilarMake(item) &&
+      isDuallyMatch(item) &&
+      isAxlesMatch(item)
+    );
+  }
+
+  // Tier 4: Broad match: Just dually/srw + axles
+  if (matched.length === 0) {
+    matched = validMpgList.filter(item => 
+      isDuallyMatch(item) &&
+      isAxlesMatch(item)
+    );
+  }
+
+  // Fallback to all completed/finalized entries from actual users of the app
+  if (matched.length === 0) {
+    matched = validMpgList;
+  }
+
+  const sum = matched.reduce((acc, h) => acc + Number(h.loadedMpg || h.milesPerGallon || 0), 0);
+  return matched.length > 0 ? Number((sum / matched.length).toFixed(1)) : 0;
+}
+
+export function getRegisteredUserSimilarSetups(
+  allPlatformCompletedHauls: any[], 
+  userProfile: any, 
+  localHaul: any
+) {
+  if (!allPlatformCompletedHauls || !Array.isArray(allPlatformCompletedHauls) || allPlatformCompletedHauls.length === 0) return [];
+
+  // Enrich items with user profile if they belong to current user
+  const enrichedList = allPlatformCompletedHauls
+    .filter(Boolean)
+    .map(h => {
+      const isCurrentUser = h.ownerId && userProfile && (h.ownerId === userProfile.uid || h.ownerId === userProfile.id);
+      if (isCurrentUser || !h.powerUnitMake) {
+        return {
+          ...h,
+          powerUnitYear: h.powerUnitYear || (userProfile?.powerUnitYear ? Number(userProfile.powerUnitYear) : ''),
+          powerUnitMake: h.powerUnitMake || userProfile?.powerUnitMake || '',
+          powerUnitModel: h.powerUnitModel || userProfile?.powerUnitModel || '',
+          engineType: h.engineType || userProfile?.engineType || '',
+          duallyOrSrw: h.duallyOrSrw || userProfile?.duallyOrSrw || 'SRW',
+          drivetrain: h.drivetrain || userProfile?.drivetrain || '',
+          powerUnitScaleWeight: h.powerUnitScaleWeight || (userProfile?.powerUnitScaleWeight ? Number(userProfile.powerUnitScaleWeight) : ''),
+          powerUnitWheelbase: h.powerUnitWheelbase || userProfile?.powerUnitWheelbase || '',
+          fuelType: h.fuelType || userProfile?.fuelType || ''
+        };
+      }
+      return h;
+    });
+
+  // Filter ONLY items with valid loaded MPG
+  const validMpgList = enrichedList.filter(h => h && (Number(h.loadedMpg || h.milesPerGallon || 0) > 0));
+  if (validMpgList.length === 0) return [];
+
+  // Extract current user attributes to match against
+  const userMake = (userProfile?.powerUnitMake || '').toLowerCase().trim();
+  const userDually = (userProfile?.duallyOrSrw || 'SRW').toLowerCase();
+  const userEngine = (userProfile?.engineType || '').toLowerCase().trim();
+  const userWheelbase = (userProfile?.powerUnitWheelbase || 'LWB').toLowerCase();
+  const userPuScaleWeight = Number(userProfile?.powerUnitScaleWeight || 0);
+
+  const curScaleWeight = Number(localHaul?.scaleWeight || 0);
+  const curAxles = Number(localHaul?.axles || 0);
+
+  // Helper matching functions
+  const isSimilarMake = (item: any) => {
+    if (!item) return false;
+    const itemMake = (item.powerUnitMake || '').toLowerCase().trim();
+    if (!userMake || !itemMake) return true;
+    return itemMake === userMake;
+  };
+
+  const isDuallyMatch = (item: any) => {
+    if (!item) return false;
+    const itemDually = (item.duallyOrSrw || 'SRW').toLowerCase();
+    return itemDually === userDually;
+  };
+
+  const isSimilarEngine = (item: any) => {
+    if (!item) return false;
+    const itemEngine = (item.engineType || '').toLowerCase().trim();
+    if (!userEngine || !itemEngine) return true;
+    return itemEngine.includes(userEngine) || userEngine.includes(itemEngine);
+  };
+
+  const isSimilarPuWeight = (item: any) => {
+    if (!item) return false;
+    const itemPuWeight = Number(item.powerUnitScaleWeight || 0);
+    if (userPuScaleWeight <= 0 || itemPuWeight <= 0) return true;
+    return Math.abs(itemPuWeight - userPuScaleWeight) <= 2500;
+  };
+
+  const isWheelbaseMatch = (item: any) => {
+    if (!item) return false;
+    const itemWheelbase = (item.powerUnitWheelbase || 'LWB').toLowerCase();
+    return itemWheelbase === userWheelbase;
+  };
+
+  const isSimilarTowedWeight = (item: any) => {
+    if (!item) return false;
+    const itemWeight = Number(item.scaleWeight || 0);
+    if (curScaleWeight <= 0 || itemWeight <= 0) return true;
+    return Math.abs(itemWeight - curScaleWeight) <= 4500;
+  };
+
+  const isAxlesMatch = (item: any) => {
+    if (!item) return false;
+    const itemAxles = Number(item.axles || 0);
+    if (curAxles <= 0 || itemAxles <= 0) return true;
+    return itemAxles === curAxles;
+  };
+
+  // Run filtering on validMpgList with fallback tiers
+  let matched = validMpgList.filter(item => 
+    isSimilarMake(item) &&
+    isDuallyMatch(item) &&
+    isSimilarEngine(item) &&
+    isWheelbaseMatch(item) &&
+    isSimilarPuWeight(item) &&
+    isSimilarTowedWeight(item) &&
+    isAxlesMatch(item)
+  );
+
+  // Tier 2: Match Make + dually + wheelbase + axles + scale weight
+  if (matched.length === 0) {
+    matched = validMpgList.filter(item => 
+      isSimilarMake(item) &&
+      isDuallyMatch(item) &&
+      isWheelbaseMatch(item) &&
+      isAxlesMatch(item) &&
+      isSimilarTowedWeight(item)
+    );
+  }
+
+  // Tier 3: Loose Match Make + dually + axles
+  if (matched.length === 0) {
+    matched = validMpgList.filter(item => 
+      isSimilarMake(item) &&
+      isDuallyMatch(item) &&
+      isAxlesMatch(item)
+    );
+  }
+
+  // Tier 4: Broad match: Just dually/srw + axles
+  if (matched.length === 0) {
+    matched = validMpgList.filter(item => 
+      isDuallyMatch(item) &&
+      isAxlesMatch(item)
+    );
+  }
+
+  // Fallback to all completed/finalized entries from actual users of the app
+  if (matched.length === 0) {
+    matched = validMpgList;
+  }
+
+  return matched;
+}
+
+const ExpenseAmountInput = ({ amount, onChange }: { amount: number, onChange: (val: number) => void }) => {
+  const [localValue, setLocalValue] = useState<string>(amount > 0 ? amount.toFixed(2) : "");
+
+  useEffect(() => {
+    const parsedLocal = parseFloat(localValue);
+    if (isNaN(parsedLocal) || parsedLocal !== amount) {
+      setLocalValue(amount > 0 ? amount.toFixed(2) : "");
+    }
+  }, [amount]);
+
+  const handleChange = (e: ChangeEvent<HTMLInputElement>) => {
+    const valStr = e.target.value;
+    setLocalValue(valStr);
+    
+    const parsed = parseFloat(valStr);
+    if (!isNaN(parsed) && parsed >= 0) {
+      onChange(parsed);
+    } else if (valStr === "") {
+      onChange(0);
+    }
+  };
+
+  const handleBlur = () => {
+    const parsed = parseFloat(localValue);
+    if (!isNaN(parsed) && parsed > 0) {
+      setLocalValue(parsed.toFixed(2));
+    } else {
+      setLocalValue("");
+    }
+  };
+
+  return (
+    <input 
+      type="text" 
+      inputMode="decimal"
+      pattern="[0-9]*[.]?[0-9]*"
+      value={localValue}
+      onChange={handleChange}
+      onBlur={handleBlur}
       className="text-sm font-semibold text-slate-900 bg-transparent focus:outline-none w-full border-b border-transparent focus:border-blue-200 transition-colors"
-  />
-);
+      placeholder="0.00"
+    />
+  );
+};
 
 // Memory cache to store computed fuel data per Haul ID so reopening is instantaneous
 const fuelDataCache: Record<string, {
@@ -124,20 +702,26 @@ const fuelDataCache: Record<string, {
   routeFuelSource: string;
 }> = {};
 
-export default function ActiveWorkspace({ haul, onClose, customFolders = [], onUpdateFolders }: Props) {
+export default function ActiveWorkspace({ haul, onClose, customFolders = [], onUpdateFolders, operatorType }: Props) {
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [isUploading, setIsUploading] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [localHaul, setLocalHaul] = useState<Haul>(haul);
   const localHaulRef = useRef<Haul>(haul);
+  const isDirtyRef = useRef(false);
   const [userProfile, setUserProfile] = useState<any>(null);
+  const currentOperatorType = localHaul.operatorType || operatorType || userProfile?.operatorType || "RV Tow Away";
   const [communityAvgMpg, setCommunityAvgMpg] = useState(10.5);
+  const [allPlatformCompletedHauls, setAllPlatformCompletedHauls] = useState<any[]>([]);
+  const [myHistoricalCompletedHauls, setMyHistoricalCompletedHauls] = useState<any[]>([]);
   const [totalHaulsCount, setTotalHaulsCount] = useState(0);
   const [scannedReceipts, setScannedReceipts] = useState<ScannedReceipt[]>([]);
   const [isUploadingReceipt, setIsUploadingReceipt] = useState(false);
   const [isReceiptFolderOpen, setIsReceiptFolderOpen] = useState(false);
   const [selectedViewerReceipt, setSelectedViewerReceipt] = useState<ScannedReceipt | null>(null);
   const [manualFuelPrice, setManualFuelPrice] = useState<number | null>(null);
+  const [showTopConfigs, setShowTopConfigs] = useState(false);
+  const [showMySimilarUnits, setShowMySimilarUnits] = useState(false);
 
   // Read from in-memory cache if available
   const cachedData = haul?.id ? fuelDataCache[haul.id] : null;
@@ -379,6 +963,245 @@ export default function ActiveWorkspace({ haul, onClose, customFolders = [], onU
   const stats = calculateTotals(localHaul, expenses);
   const { expectedMpg: expectedVehicleMpg } = getExpectedVehicleMpg(userProfile, localHaul, traversedStates);
 
+  const mySimilarHauls = (() => {
+    let isDiesel = (userProfile?.fuelType || 'Diesel') === 'Diesel';
+    const engineLower = (userProfile?.engineType || "").toLowerCase();
+    if (engineLower.includes("diesel")) {
+      isDiesel = true;
+    } else if (engineLower.includes("gas") || engineLower.includes("hemi") || engineLower.includes("vortec") || engineLower.includes("godzilla")) {
+      isDiesel = false;
+    }
+
+    const curWeight = parseCleanWeight(localHaul.scaleWeight) || 0;
+    const getTerrainCategoryForLocs = (states: string[], pickUp: string, delivery: string) => {
+      const allStates = new Set<string>(states);
+      const pCode = extractStateCode(pickUp);
+      const dCode = extractStateCode(delivery);
+      if (pCode) allStates.add(pCode);
+      if (dCode) allStates.add(dCode);
+      
+      const mountainStates = ["CO", "UT", "WY", "ID", "MT", "WA", "OR", "CA", "NV", "NM", "AZ"];
+      const plainsStates = ["KS", "NE", "SD", "ND", "OK", "IA", "TX"];
+      
+      let mtCount = 0;
+      let plainsCount = 0;
+      allStates.forEach(st => {
+        if (mountainStates.includes(st)) mtCount++;
+        if (plainsStates.includes(st)) plainsCount++;
+      });
+      
+      if (mtCount > 0) return 'mountain';
+      if (plainsCount > 0) return 'plains';
+      return 'flat';
+    };
+
+    const curTerrain = getTerrainCategoryForLocs(traversedStates, localHaul.pickUpLocation || "", localHaul.deliveryLocation || "");
+    const myCompleted = myHistoricalCompletedHauls.length > 0
+      ? myHistoricalCompletedHauls.filter(h => h && h.id !== localHaul.id && (h.loadedMpg > 0 || h.milesPerGallon > 0))
+      : allPlatformCompletedHauls.filter(h => h && h.ownerId && auth.currentUser && h.ownerId === auth.currentUser.uid && h.id !== localHaul.id);
+
+    const sameFuelType = myCompleted.filter(item => {
+      if (!item) return false;
+      const itemEngine = (item.engineType || "").toLowerCase();
+      const itemIsDiesel = item.fuelType === 'Diesel' || itemEngine.includes('diesel');
+      return itemIsDiesel === isDiesel;
+    });
+    const baseSet = sameFuelType.length > 0 ? sameFuelType : myCompleted;
+
+    const matched = baseSet.filter(item => {
+      if (!item) return false;
+      const itemWeight = Number(item.scaleWeight || 0);
+      if (curWeight > 0) {
+        if (itemWeight <= 0) return false;
+        const weightDiff = Math.abs(itemWeight - curWeight);
+        return weightDiff <= 1000;
+      }
+      return true;
+    });
+
+    // Sort to prioritize same terrain first, then date descending
+    matched.sort((a, b) => {
+      const terrainA = getTerrainCategoryForLocs([], a.pickUpLocation || "", a.deliveryLocation || "") === curTerrain;
+      const terrainB = getTerrainCategoryForLocs([], b.pickUpLocation || "", b.deliveryLocation || "") === curTerrain;
+      
+      if (terrainA && !terrainB) return -1;
+      if (!terrainA && terrainB) return 1;
+      
+      const dateA = a.pickUpDate ? new Date(a.pickUpDate).getTime() : 0;
+      const dateB = b.pickUpDate ? new Date(b.pickUpDate).getTime() : 0;
+      return dateB - dateA;
+    });
+
+    return matched;
+  })();
+
+  const myAvgSimilarMpg = (() => {
+    const last5 = [...mySimilarHauls]
+      .sort((a, b) => {
+        const dateA = a.pickUpDate ? new Date(a.pickUpDate).getTime() : 0;
+        const dateB = b.pickUpDate ? new Date(b.pickUpDate).getTime() : 0;
+        return dateB - dateA;
+      })
+      .slice(0, 5);
+    return last5.length > 0
+      ? last5.reduce((acc, h) => acc + (h.loadedMpg || h.milesPerGallon || 0), 0) / last5.length
+      : 0;
+  })();
+
+  const peersAvgSimilarMpg = (() => {
+    let isDiesel = (userProfile?.fuelType || 'Diesel') === 'Diesel';
+    const engineLower = (userProfile?.engineType || "").toLowerCase();
+    if (engineLower.includes("diesel")) {
+      isDiesel = true;
+    } else if (engineLower.includes("gas") || engineLower.includes("hemi") || engineLower.includes("vortec") || engineLower.includes("godzilla")) {
+      isDiesel = false;
+    }
+
+    const curWeight = parseCleanWeight(localHaul.scaleWeight) || 0;
+    const getTerrainCategoryForLocs = (states: string[], pickUp: string, delivery: string) => {
+      const allStates = new Set<string>(states);
+      const pCode = extractStateCode(pickUp);
+      const dCode = extractStateCode(delivery);
+      if (pCode) allStates.add(pCode);
+      if (dCode) allStates.add(dCode);
+      
+      const mountainStates = ["CO", "UT", "WY", "ID", "MT", "WA", "OR", "CA", "NV", "NM", "AZ"];
+      const plainsStates = ["KS", "NE", "SD", "ND", "OK", "IA", "TX"];
+      
+      let mtCount = 0;
+      let plainsCount = 0;
+      allStates.forEach(st => {
+        if (mountainStates.includes(st)) mtCount++;
+        if (plainsStates.includes(st)) plainsCount++;
+      });
+      
+      if (mtCount > 0) return 'mountain';
+      if (plainsCount > 0) return 'plains';
+      return 'flat';
+    };
+
+    const curTerrain = getTerrainCategoryForLocs(traversedStates, localHaul.pickUpLocation || "", localHaul.deliveryLocation || "");
+    const peersCompleted = allPlatformCompletedHauls.filter(h => h && h.ownerId !== auth.currentUser?.uid);
+
+    const sameFuelType = peersCompleted.filter(item => {
+      if (!item) return false;
+      const itemEngine = (item.engineType || "").toLowerCase();
+      const itemIsDiesel = item.fuelType === 'Diesel' || itemEngine.includes('diesel');
+      return itemIsDiesel === isDiesel;
+    });
+    const baseSet = sameFuelType.length > 0 ? sameFuelType : peersCompleted;
+
+    let matched = baseSet.filter(item => {
+      if (!item) return false;
+      const itemTerrain = getTerrainCategoryForLocs([], item.pickUpLocation || "", item.deliveryLocation || "");
+      const sameTerrain = itemTerrain === curTerrain;
+      const weightDiff = Math.abs((item.scaleWeight || 0) - curWeight);
+      return sameTerrain && (curWeight > 0 ? (weightDiff <= 3500) : true);
+    });
+
+    if (matched.length === 0) {
+      matched = baseSet.filter(item => {
+        if (!item) return false;
+        const itemTerrain = getTerrainCategoryForLocs([], item.pickUpLocation || "", item.deliveryLocation || "");
+        const sameTerrain = itemTerrain === curTerrain;
+        const weightDiff = Math.abs((item.scaleWeight || 0) - curWeight);
+        return sameTerrain && (curWeight > 0 ? (weightDiff <= 6000) : true);
+      });
+    }
+
+    if (matched.length === 0) {
+      matched = baseSet.filter(item => {
+        if (!item) return false;
+        const itemTerrain = getTerrainCategoryForLocs([], item.pickUpLocation || "", item.deliveryLocation || "");
+        return itemTerrain === curTerrain;
+      });
+    }
+
+    if (matched.length === 0) return 0;
+    const sum = matched.reduce((acc, h) => acc + (h.loadedMpg || h.milesPerGallon || 0), 0);
+    return sum / matched.length;
+  })();
+
+  const combinedHaulsGlobal = useMemo(() => {
+    const map = new Map();
+    if (allPlatformCompletedHauls && Array.isArray(allPlatformCompletedHauls)) {
+      allPlatformCompletedHauls.forEach(h => { if (h && h.id) map.set(h.id, h); });
+    }
+    if (myHistoricalCompletedHauls && Array.isArray(myHistoricalCompletedHauls)) {
+      myHistoricalCompletedHauls.forEach(h => {
+        if (!h || !h.id) return;
+        map.set(h.id, {
+          ...h,
+          ownerId: h.ownerId || auth.currentUser?.uid,
+          loadedMpg: Number(h.loadedMpg || h.milesPerGallon || 0),
+          powerUnitYear: h.powerUnitYear || (userProfile?.powerUnitYear ? Number(userProfile.powerUnitYear) : ''),
+          powerUnitMake: h.powerUnitMake || userProfile?.powerUnitMake || '',
+          powerUnitModel: h.powerUnitModel || userProfile?.powerUnitModel || '',
+          engineType: h.engineType || userProfile?.engineType || '',
+          duallyOrSrw: h.duallyOrSrw || userProfile?.duallyOrSrw || 'SRW',
+          drivetrain: h.drivetrain || userProfile?.drivetrain || '',
+          powerUnitScaleWeight: h.powerUnitScaleWeight || (userProfile?.powerUnitScaleWeight ? Number(userProfile.powerUnitScaleWeight) : ''),
+          powerUnitWheelbase: h.powerUnitWheelbase || userProfile?.powerUnitWheelbase || '',
+          fuelType: h.fuelType || userProfile?.fuelType || ''
+        });
+      });
+    }
+    return Array.from(map.values());
+  }, [allPlatformCompletedHauls, myHistoricalCompletedHauls, userProfile, auth.currentUser]);
+
+  const top5GlobalSetups = useMemo(() => {
+    const setupGroups = new Map<string, any>();
+    
+    // Leverage the multi-tiered platform-wide setups filter to find peer setups with same or similar configuration
+    const similarHauls = getRegisteredUserSimilarSetups(combinedHaulsGlobal, userProfile, localHaul);
+
+    similarHauls.forEach(h => {
+      const mpg = Number(h.loadedMpg || h.milesPerGallon || 0);
+      if (mpg <= 0) return;
+
+      const make = h.powerUnitMake || 'Generic';
+      const model = h.powerUnitModel || 'Power Unit';
+      const year = h.powerUnitYear || '';
+      const drw = h.duallyOrSrw || 'SRW';
+      const drive = h.drivetrain || '4x4';
+      const wb = h.powerUnitWheelbase || 'LWB';
+      const axles = h.axles || '';
+      const unitType = h.unitType || 'RV';
+      
+      const key = `${year}-${make}-${model}-${drw}-${drive}-${wb}-${axles}-${unitType}`;
+      
+      if (!setupGroups.has(key)) {
+        setupGroups.set(key, {
+          make, model, year, drw, drive, wb, axles, unitType,
+          scaleWeight: Number(h.scaleWeight || 0),
+          totalMpg: 0,
+          count: 0
+        });
+      }
+      
+      const group = setupGroups.get(key);
+      group.totalMpg += mpg;
+      group.count += 1;
+      if (Number(h.scaleWeight || 0) > group.scaleWeight) {
+        group.scaleWeight = Number(h.scaleWeight || 0);
+      }
+    });
+
+    return Array.from(setupGroups.values())
+      .map(g => ({
+        ...g,
+        avgMpg: g.totalMpg / g.count
+      }))
+      .sort((a, b) => b.avgMpg - a.avgMpg)
+      .slice(0, 5);
+  }, [combinedHaulsGlobal, userProfile, localHaul]);
+
+  const industryAvgMpg = useMemo(() => {
+    if (top5GlobalSetups.length === 0) return 0;
+    const sum = top5GlobalSetups.reduce((acc, g) => acc + g.avgMpg, 0);
+    return sum / top5GlobalSetups.length;
+  }, [top5GlobalSetups]);
+
   const [showErrors, setShowErrors] = useState(false);
 
   const mandatoryFields: (keyof Haul)[] = [
@@ -395,6 +1218,7 @@ export default function ActiveWorkspace({ haul, onClose, customFolders = [], onU
   });
 
   const isComplete = missingFields.length === 0;
+  const isMarkCompletedDisabled = (haul.status !== 'Completed' && haul.status !== 'Finalized') && !isComplete;
 
   const isFieldInvalid = (field: keyof Haul) => {
     if (!showErrors) return false;
@@ -405,12 +1229,18 @@ export default function ActiveWorkspace({ haul, onClose, customFolders = [], onU
   const averagePricePerGallon = stats.totalFuelGallons > 0 ? ((stats.costsByCategory['Fuel'] || 0) / stats.totalFuelGallons) : 0;
 
 
+  const expensesRef = useRef<Expense[]>([]);
+  useEffect(() => {
+    expensesRef.current = expenses;
+  }, [expenses]);
+
   const handleHaulChange = (e: any) => {
     const { name, value, type } = e.target;
     let parsedValue: any = value;
     if (type === 'number') {
-      parsedValue = value === '' ? 0 : parseFloat(value);
+      parsedValue = value === '' ? '' : parseFloat(value);
     }
+    isDirtyRef.current = true;
     setLocalHaul(prev => {
       const updated = { ...prev, [name]: parsedValue };
       localHaulRef.current = updated;
@@ -418,22 +1248,90 @@ export default function ActiveWorkspace({ haul, onClose, customFolders = [], onU
     });
   };
 
-  const saveHaulData = async () => {
+  const saveHaulData = async (updatedHaul?: any) => {
     if (!haul?.id) return;
     if (haul.status !== 'Active') return; // Do not save if completed or finalized (blocked by rules)
+    
+    const isEvent = updatedHaul && (
+      updatedHaul.nativeEvent || 
+      updatedHaul.target || 
+      updatedHaul.preventDefault || 
+      (typeof updatedHaul === 'object' && 'type' in updatedHaul && 'bubbles' in updatedHaul)
+    );
+
+    // If an explicit non-event object was passed, mark dirty to force the save
+    if (updatedHaul && !isEvent) {
+      isDirtyRef.current = true;
+    }
+
+    if (!isDirtyRef.current) return;
+
     try {
-      const currentStats = calculateTotals(localHaulRef.current, expenses);
-      const { id, ownerId, status, createdAt, updatedAt, ...dataToSave } = localHaulRef.current as any;
+      const targetHaul = (updatedHaul && !isEvent && typeof updatedHaul === 'object' && 'unitNumber' in updatedHaul) 
+        ? updatedHaul 
+        : localHaulRef.current;
+      const currentStats = calculateTotals(targetHaul, expensesRef.current);
+      const { id, ownerId, status, createdAt, updatedAt, ...dataToSave } = targetHaul as any;
+      
+      const cleanedDataToSave: any = {};
+      Object.keys(dataToSave).forEach(key => {
+        if (dataToSave[key] !== undefined) {
+          cleanedDataToSave[key] = dataToSave[key];
+        }
+      });
       
       await updateDoc(doc(db, 'hauls', haul.id), {
-        ...dataToSave,
+        ...cleanedDataToSave,
         grossRevenue: currentStats.grossRevenue,
         totalOperatingCosts: currentStats.totalOperatingCosts,
         netProfit: currentStats.netProfit,
         milesPerGallon: currentStats.mpg,
         updatedAt: serverTimestamp()
       });
-    } catch(err) { console.error(err); }
+
+      // Clear dirty flag upon successful Firestore save
+      isDirtyRef.current = false;
+    } catch(err) { 
+      console.error("Error autosaving haul data:", err); 
+    }
+  };
+
+  const saveHaulDataRef = useRef(saveHaulData);
+  useEffect(() => {
+    saveHaulDataRef.current = saveHaulData;
+  }, [saveHaulData]);
+
+  // Sync prop changes from Firestore to local state when there are no unsaved dirty edits
+  useEffect(() => {
+    if (haul && !isDirtyRef.current) {
+      setLocalHaul(haul);
+      localHaulRef.current = haul;
+    }
+  }, [haul]);
+
+  // Debounced auto-save effect for seamless background persistence as the user works
+  useEffect(() => {
+    if (!isDirtyRef.current) return;
+    const timer = setTimeout(() => {
+      saveHaulData();
+    }, 1000); // 1.0 second autosave debounce
+    return () => clearTimeout(timer);
+  }, [localHaul]);
+
+  useEffect(() => {
+    return () => {
+      // Force immediate save on unmount if dirty
+      if (isDirtyRef.current) {
+        saveHaulDataRef.current();
+      }
+    };
+  }, []);
+
+  const handleClose = async () => {
+    if (isDirtyRef.current) {
+      await saveHaulData();
+    }
+    onClose();
   };
 
   const handleMarkCompleted = async () => {
@@ -609,20 +1507,52 @@ export default function ActiveWorkspace({ haul, onClose, customFolders = [], onU
       setTotalHaulsCount(snap.size);
       let totalMpg = 0;
       let count = 0;
+      const list: any[] = [];
       snap.forEach(docSnap => {
         const data = docSnap.data();
-        const mpg = data.milesPerGallon || data.loadedMpg || data.deadheadMpg;
+        list.push({ id: docSnap.id, ...data });
+        // Skip deadhead MPG as it doesn't need to be aggregated
+        const mpg = data.loadedMpg || data.milesPerGallon;
         if (typeof mpg === 'number' && mpg > 0) {
           totalMpg += mpg;
           count++;
         }
       });
+      setMyHistoricalCompletedHauls(list);
       if (count > 0) {
         setCommunityAvgMpg(totalMpg / count);
       }
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, 'hauls');
     });
     return () => unsub();
   }, [auth.currentUser]);
+
+  useEffect(() => {
+    let isActive = true;
+    async function loadPlatformCompletedHauls() {
+      try {
+        const res = await fetch('/api/community-hauls-summary');
+        if (!res.ok) throw new Error("API responded with " + res.status);
+        const data = await res.json();
+        if (isActive && data && Array.isArray(data.hauls)) {
+          const loaded = data.hauls || [];
+          const merged = [...loaded.filter(Boolean), ...FALLBACK_PLATFORM_HAULS.filter(Boolean)];
+          const unique = merged.filter((item, index, self) =>
+            item && item.id && self.findIndex(t => t && t.id === item.id) === index
+          );
+          setAllPlatformCompletedHauls(unique);
+        }
+      } catch (err) {
+        console.warn("Could not load community completed hauls summary from server:", err);
+        if (isActive) {
+          setAllPlatformCompletedHauls(FALLBACK_PLATFORM_HAULS);
+        }
+      }
+    }
+    loadPlatformCompletedHauls();
+    return () => { isActive = false; };
+  }, []);
 
   useEffect(() => {
     if (!haul?.id || !auth.currentUser) return;
@@ -653,7 +1583,7 @@ export default function ActiveWorkspace({ haul, onClose, customFolders = [], onU
         <header className="flex items-center justify-between gap-4 mb-4 sm:mb-8 mt-2 sm:mt-0">
           <div className="flex items-center gap-4">
             <button 
-              onClick={onClose}
+              onClick={handleClose}
               className="hidden sm:flex p-3 bg-white rounded-2xl shadow-sm border border-slate-200 hover:bg-slate-50 hover:shadow transition-all group"
               title="Close Workspace"
             >
@@ -666,8 +1596,13 @@ export default function ActiveWorkspace({ haul, onClose, customFolders = [], onU
           </div>
 
           <button
-            onClick={handleMarkCompleted}
-            className="flex items-center justify-center gap-2 px-4 sm:px-6 py-2 sm:py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-2xl text-xs sm:text-sm font-bold shadow-sm hover:shadow-md transition-all focus:outline-none cursor-pointer shrink-0"
+            onClick={isMarkCompletedDisabled ? undefined : handleMarkCompleted}
+            disabled={isMarkCompletedDisabled}
+            className={`flex items-center justify-center gap-2 px-4 sm:px-6 py-2 sm:py-3 rounded-2xl text-xs sm:text-sm font-bold shadow-sm transition-all focus:outline-none shrink-0 ${
+              isMarkCompletedDisabled 
+                ? 'bg-slate-200 text-slate-400 cursor-not-allowed opacity-75' 
+                : 'bg-emerald-600 hover:bg-emerald-700 text-white hover:shadow-md cursor-pointer'
+            }`}
           >
             <CheckCircle className="w-4 h-4 sm:w-5 sm:h-5 shrink-0" />
             <span>{(haul.status === 'Completed' || haul.status === 'Finalized') ? 'Save & Close' : 'Mark Completed'}</span>
@@ -718,15 +1653,35 @@ export default function ActiveWorkspace({ haul, onClose, customFolders = [], onU
                   </span>
                   {/* SECTION_2_MID_ANCHOR_1 */}
                   <div className="space-y-3">
-                    <input 
-                      name="folder" 
-                      type="text" 
-                      value={localHaul.folder || ''} 
-                      onChange={handleHaulChange} 
-                      onBlur={saveHaulData}
-                      placeholder="Type a folder name to organize / move..."
-                      className="w-full border rounded-2xl px-4 py-3 text-sm font-medium focus:outline-none transition-all bg-slate-50 border-slate-100 focus:bg-white focus:ring-2 focus:ring-blue-100 animate-slide-in" 
-                    />
+                    <div className="flex flex-col">
+                      <input 
+                        name="folder" 
+                        type="text" 
+                        value={localHaul.folder || ''} 
+                        onChange={handleHaulChange} 
+                        onBlur={saveHaulData}
+                        placeholder="Type a folder name to organize / move..."
+                        className="w-full border rounded-2xl px-4 py-3 text-sm font-medium focus:outline-none transition-all bg-slate-50 border-slate-100 focus:bg-white focus:ring-2 focus:ring-blue-100 animate-slide-in" 
+                      />
+                      {localHaul.folder && localHaul.folder.trim().length > 0 && !(customFolders || []).includes(localHaul.folder.trim()) && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const typedFolder = localHaul.folder!.trim();
+                            const updatedFolders = [...(customFolders || []), typedFolder];
+                            if (onUpdateFolders) {
+                              onUpdateFolders(updatedFolders);
+                            }
+                            isDirtyRef.current = true;
+                            saveHaulData();
+                          }}
+                          className="mt-2 self-start inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-xl text-xs font-bold border border-blue-200 transition-all shadow-xs"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                          Create & Assign Folder &ldquo;{localHaul.folder.trim()}&rdquo;
+                        </button>
+                      )}
+                    </div>
                     {customFolders && customFolders.length > 0 && (
                       <div className="space-y-1.5">
                         <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Assign to Existing Folder:</p>
@@ -736,13 +1691,12 @@ export default function ActiveWorkspace({ haul, onClose, customFolders = [], onU
                               key={folder}
                               type="button"
                               onClick={() => {
-                                setLocalHaul(prev => {
-                                  const updated = { ...prev, folder };
-                                  localHaulRef.current = updated;
-                                  return updated;
-                                });
+                                isDirtyRef.current = true;
+                                const updated = { ...localHaul, folder };
+                                setLocalHaul(updated);
+                                localHaulRef.current = updated;
                                 // Save immediately
-                                saveHaulData();
+                                saveHaulData(updated);
                               }}
                               className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all ${
                                 (localHaul.folder || '') === folder 
@@ -757,13 +1711,12 @@ export default function ActiveWorkspace({ haul, onClose, customFolders = [], onU
                             <button
                               type="button"
                               onClick={() => {
-                                setLocalHaul(prev => {
-                                  const updated = { ...prev, folder: '' };
-                                  localHaulRef.current = updated;
-                                  return updated;
-                                });
+                                isDirtyRef.current = true;
+                                const updated = { ...localHaul, folder: '' };
+                                setLocalHaul(updated);
+                                localHaulRef.current = updated;
                                 // Save immediately
-                                saveHaulData();
+                                saveHaulData(updated);
                               }}
                               className="px-3 py-1.5 rounded-xl text-xs font-semibold border border-dashed border-red-200 text-red-600 bg-white hover:bg-red-50 hover:border-red-300 transition-all flex items-center gap-1"
                             >
@@ -870,73 +1823,300 @@ export default function ActiveWorkspace({ haul, onClose, customFolders = [], onU
                 </div>
               )}
 
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
-                <div className="space-y-1.5">
-                  <label className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Unit Number*</label>
-                  <input 
-                    name="unitNumber" 
-                    value={localHaul.unitNumber || ''} 
-                    autoComplete="off"
-                    onChange={handleHaulChange}
-                    onBlur={saveHaulData}
-                    className={`w-full border rounded-2xl px-4 py-3 text-sm font-medium focus:ring-2 focus:outline-none transition-all ${
-                      isFieldInvalid('unitNumber') 
-                        ? 'border-red-500 ring-2 ring-red-100 text-slate-900 ring-offset-0' 
-                        : 'bg-slate-50 border-slate-100 focus:ring-blue-100 focus:bg-white'
-                    }`} 
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <label className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Unit Type*</label>
-                  <input 
-                    name="unitType" 
-                    value={localHaul.unitType || ''} 
-                    autoComplete="off"
-                    onChange={handleHaulChange}
-                    onBlur={saveHaulData}
-                    className={`w-full border rounded-2xl px-4 py-3 text-sm font-medium focus:ring-2 focus:outline-none transition-all ${
-                      isFieldInvalid('unitType') 
-                        ? 'border-red-500 ring-2 ring-red-100 text-slate-900 ring-offset-0' 
-                        : 'bg-slate-50 border-slate-100 focus:ring-blue-100 focus:bg-white'
-                    }`} 
-                  />
-                </div>
-              </div>
+              {currentOperatorType === 'RV Multi Haul' ? (
+                <div className="space-y-6">
+                  {/* Unit 1 */}
+                  <div className="bg-slate-50/55 p-5 md:p-6 rounded-3xl border border-slate-100/80 space-y-4">
+                    <div className="flex justify-between items-center pb-2 border-b border-slate-100">
+                      <h4 className="text-xs font-black text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
+                        <span className="w-2 h-2 rounded-full bg-blue-500" />
+                        Unit #1 Specifications*
+                      </h4>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] uppercase font-bold text-slate-450 tracking-wider">Unit Number 1*</label>
+                        <input name="unitNumber" value={localHaul.unitNumber || ''} onChange={handleHaulChange} onBlur={() => saveHaulData()} className="w-full border rounded-2xl px-4 py-3 text-sm font-medium focus:ring-2 focus:outline-none transition-all bg-white border-slate-200 focus:ring-blue-100" />
+                      </div>
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] uppercase font-bold text-slate-450 tracking-wider">Unit Length 1 (Feet)*</label>
+                        <input type="number" name="unitLength" value={localHaul.unitLength || ''} onChange={handleHaulChange} onBlur={() => saveHaulData()} className="w-full border rounded-2xl px-4 py-3 text-sm font-medium focus:ring-2 focus:outline-none transition-all bg-white border-slate-200 focus:ring-blue-100" />
+                      </div>
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] uppercase font-bold text-slate-450 tracking-wider">GVWR 1 (lbs)*</label>
+                        <input type="number" name="grossWeight" value={localHaul.grossWeight || ''} onChange={handleHaulChange} onBlur={() => saveHaulData()} className="w-full border rounded-2xl px-4 py-3 text-sm font-medium focus:ring-2 focus:outline-none transition-all bg-white border-slate-200 focus:ring-blue-100" />
+                      </div>
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] uppercase font-bold text-slate-450 tracking-wider">Dry Weight 1 (lbs)*</label>
+                        <input type="number" name="scaleWeight" value={localHaul.scaleWeight || ''} onChange={handleHaulChange} onBlur={() => saveHaulData()} className="w-full border rounded-2xl px-4 py-3 text-sm font-medium focus:ring-2 focus:outline-none transition-all bg-white border-slate-200 focus:ring-blue-100" />
+                      </div>
+                    </div>
+                  </div>
 
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
-                <div className="space-y-1.5">
-                  <label className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">GVWR (lbs)*</label>
-                  <input 
-                    name="grossWeight" 
-                    type="number" 
-                    value={localHaul.grossWeight || ''} 
-                    onChange={handleHaulChange} 
-                    onBlur={saveHaulData} 
-                    placeholder="0"
-                    className={`w-full border rounded-2xl px-4 py-3 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-blue-100 transition-all ${
-                        isFieldInvalid('grossWeight')
-                          ? 'border-red-500 ring-2 ring-red-100 text-slate-900 ring-offset-0' 
-                          : 'bg-slate-50 border-slate-100'
-                      }`} 
-                  />
+                  {/* Unit 2 */}
+                  <div className="bg-slate-50/55 p-5 md:p-6 rounded-3xl border border-slate-100/80 space-y-4">
+                    <div className="flex justify-between items-center pb-2 border-b border-slate-100">
+                      <h4 className="text-xs font-black text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
+                        <span className="w-2 h-2 rounded-full bg-indigo-500" />
+                        Unit #2 Specifications (Optional)
+                      </h4>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] uppercase font-bold text-slate-450 tracking-wider">Unit Number 2</label>
+                        <input name="unitNumber2" value={localHaul.unitNumber2 || ''} onChange={handleHaulChange} onBlur={() => saveHaulData()} className="w-full border rounded-2xl px-4 py-3 text-sm font-medium focus:ring-2 focus:outline-none transition-all bg-white border-slate-200 focus:ring-blue-100" />
+                      </div>
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] uppercase font-bold text-slate-450 tracking-wider">Unit Length 2 (Feet)</label>
+                        <input type="number" name="unitLength2" value={localHaul.unitLength2 || ''} onChange={handleHaulChange} onBlur={() => saveHaulData()} className="w-full border rounded-2xl px-4 py-3 text-sm font-medium focus:ring-2 focus:outline-none transition-all bg-white border-slate-200 focus:ring-blue-100" />
+                      </div>
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] uppercase font-bold text-slate-450 tracking-wider">GVWR 2 (lbs)</label>
+                        <input type="number" name="grossWeight2" value={localHaul.grossWeight2 || ''} onChange={handleHaulChange} onBlur={() => saveHaulData()} className="w-full border rounded-2xl px-4 py-3 text-sm font-medium focus:ring-2 focus:outline-none transition-all bg-white border-slate-200 focus:ring-blue-100" />
+                      </div>
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] uppercase font-bold text-slate-450 tracking-wider">Dry Weight 2 (lbs)</label>
+                        <input type="number" name="scaleWeight2" value={localHaul.scaleWeight2 || ''} onChange={handleHaulChange} onBlur={() => saveHaulData()} className="w-full border rounded-2xl px-4 py-3 text-sm font-medium focus:ring-2 focus:outline-none transition-all bg-white border-slate-200 focus:ring-blue-100" />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Unit 3 */}
+                  <div className="bg-slate-50/55 p-5 md:p-6 rounded-3xl border border-slate-100/80 space-y-4">
+                    <div className="flex justify-between items-center pb-2 border-b border-slate-100">
+                      <h4 className="text-xs font-black text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
+                        <span className="w-2 h-2 rounded-full bg-purple-500" />
+                        Unit #3 Specifications (Optional)
+                      </h4>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] uppercase font-bold text-slate-450 tracking-wider">Unit Number 3</label>
+                        <input name="unitNumber3" value={localHaul.unitNumber3 || ''} onChange={handleHaulChange} onBlur={() => saveHaulData()} className="w-full border rounded-2xl px-4 py-3 text-sm font-medium focus:ring-2 focus:outline-none transition-all bg-white border-slate-200 focus:ring-blue-100" />
+                      </div>
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] uppercase font-bold text-slate-450 tracking-wider">Unit Length 3 (Feet)</label>
+                        <input type="number" name="unitLength3" value={localHaul.unitLength3 || ''} onChange={handleHaulChange} onBlur={() => saveHaulData()} className="w-full border rounded-2xl px-4 py-3 text-sm font-medium focus:ring-2 focus:outline-none transition-all bg-white border-slate-200 focus:ring-blue-100" />
+                      </div>
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] uppercase font-bold text-slate-450 tracking-wider">GVWR 3 (lbs)</label>
+                        <input type="number" name="grossWeight3" value={localHaul.grossWeight3 || ''} onChange={handleHaulChange} onBlur={() => saveHaulData()} className="w-full border rounded-2xl px-4 py-3 text-sm font-medium focus:ring-2 focus:outline-none transition-all bg-white border-slate-200 focus:ring-blue-100" />
+                      </div>
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] uppercase font-bold text-slate-450 tracking-wider">Dry Weight 3 (lbs)</label>
+                        <input type="number" name="scaleWeight3" value={localHaul.scaleWeight3 || ''} onChange={handleHaulChange} onBlur={() => saveHaulData()} className="w-full border rounded-2xl px-4 py-3 text-sm font-medium focus:ring-2 focus:outline-none transition-all bg-white border-slate-200 focus:ring-blue-100" />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Classification Specs */}
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6 animate-none">
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] uppercase font-bold text-slate-450 tracking-wider">Unit Type*</label>
+                      <select 
+                        name="unitType" 
+                        value={localHaul.unitType || ''} 
+                        onChange={handleHaulChange}
+                        onBlur={() => saveHaulData()}
+                        className={`w-full border rounded-2xl px-3 py-3 text-sm font-medium focus:ring-2 focus:outline-none transition-all ${
+                          isFieldInvalid('unitType') 
+                            ? 'border-red-500 ring-2 ring-red-100 text-slate-900 ring-offset-0' 
+                            : 'bg-slate-50 border-slate-100 focus:ring-blue-100 focus:bg-white'
+                        }`}
+                      >
+                        <option value="">Select Type</option>
+                        <option value="Travel Trailer">Travel Trailer</option>
+                        <option value="Fifth Wheel">Fifth Wheel</option>
+                        <option value="GN fifth Wheel">GN fifth Wheel</option>
+                        <option value="Park/Destination Model">Park/Destination Model</option>
+                        <option value="Cargo Trailer">Cargo Trailer</option>
+                      </select>
+                    </div>
+                    <div className="space-y-1.5">
+                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Axles configuration</span>
+                      <div className="flex gap-1.5">
+                        {[1, 2, 3].map(cx => (
+                          <label 
+                            key={cx} 
+                            className={`flex-1 flex items-center justify-center gap-1 px-2.5 py-2.5 rounded-2xl border text-[10px] font-bold transition-all cursor-pointer ${
+                              (localHaul.axles || 1) === cx 
+                                ? 'bg-indigo-50 border-indigo-200 text-indigo-700 font-black' 
+                                : 'bg-slate-50 border-slate-100 text-slate-500 hover:bg-slate-100'
+                            }`}
+                          >
+                            <input 
+                              type="radio" 
+                              name="axles" 
+                              value={cx} 
+                              checked={(localHaul.axles || 1) === cx} 
+                              onChange={() => {
+                                const updated = { ...localHaul, axles: cx };
+                                setLocalHaul(updated);
+                                localHaulRef.current = updated;
+                                saveHaulData(updated);
+                              }}
+                              className="sr-only"
+                            />
+                            <span>{cx} Axle{cx > 1 ? 's' : ''}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
                 </div>
-                <div className="space-y-1.5">
-                  <label className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Scale/Dry Weight (lbs)*</label>
-                  <input 
-                    name="scaleWeight" 
-                    type="number" 
-                    value={localHaul.scaleWeight || ''} 
-                    onChange={handleHaulChange} 
-                    onBlur={saveHaulData} 
-                    placeholder="0"
-                    className={`w-full border rounded-2xl px-4 py-3 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-blue-100 transition-all ${
-                        isFieldInvalid('scaleWeight')
-                          ? 'border-red-500 ring-2 ring-red-100 text-slate-900 ring-offset-0' 
-                          : 'bg-slate-50 border-slate-100'
-                      }`} 
-                  />
-                </div>
-              </div>
+              ) : (
+                <>
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">
+                        {currentOperatorType === 'Hot Shot' ? 'BOL Number*' : 'Unit Number*'}
+                      </label>
+                      <input 
+                        name="unitNumber" 
+                        value={localHaul.unitNumber || ''} 
+                        autoComplete="off"
+                        onChange={handleHaulChange}
+                        onBlur={() => saveHaulData()}
+                        className={`w-full border rounded-2xl px-4 py-3 text-sm font-medium focus:ring-2 focus:outline-none transition-all ${
+                          isFieldInvalid('unitNumber') 
+                            ? 'border-red-500 ring-2 ring-red-100 text-slate-900 ring-offset-0' 
+                            : 'bg-slate-50 border-slate-100 focus:ring-blue-100 focus:bg-white'
+                        }`} 
+                      />
+                    </div>
+                    <div className="space-y-1.5 flex flex-col justify-between">
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="space-y-1">
+                          <label className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">
+                            {currentOperatorType === 'Hot Shot' ? 'Load Type*' : 'Unit Type*'}
+                          </label>
+                          <select 
+                            name="unitType" 
+                            value={localHaul.unitType || ''} 
+                            onChange={handleHaulChange}
+                            onBlur={() => saveHaulData()}
+                            className={`w-full border rounded-2xl px-3 py-3 text-sm font-medium focus:ring-2 focus:outline-none transition-all ${
+                              isFieldInvalid('unitType') 
+                                ? 'border-red-500 ring-2 ring-red-100 text-slate-900 ring-offset-0' 
+                                : 'bg-slate-50 border-slate-100 focus:ring-blue-100 focus:bg-white'
+                            }`}
+                          >
+                            {currentOperatorType === 'Hot Shot' ? (
+                              <>
+                                <option value="">Select Type</option>
+                                <option value="Equipment/Machinery">Equipment/Machinery</option>
+                                <option value="Steel/Materials">Steel/Materials</option>
+                                <option value="Vehicles/Boats">Vehicles/Boats</option>
+                                <option value="General Freight">General Freight</option>
+                                <option value="LTL Deck load">LTL Deck load</option>
+                              </>
+                            ) : (
+                              <>
+                                <option value="">Select Type</option>
+                                <option value="Travel Trailer">Travel Trailer</option>
+                                <option value="Fifth Wheel">Fifth Wheel</option>
+                                <option value="GN fifth Wheel">GN fifth Wheel</option>
+                                <option value="Park/Destination Model">Park/Destination Model</option>
+                                <option value="Cargo Trailer">Cargo Trailer</option>
+                              </>
+                            )}
+                          </select>
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">
+                            {currentOperatorType === 'Hot Shot' ? 'Load Length (Feet)*' : 'Unit Length (Feet)*'}
+                          </label>
+                          <input 
+                            type="number"
+                            name="unitLength" 
+                            value={localHaul.unitLength || ''} 
+                            autoComplete="off"
+                            onChange={handleHaulChange}
+                            onBlur={() => saveHaulData()}
+                            placeholder="Length"
+                            className={`w-full border rounded-2xl px-4 py-3 text-sm font-medium focus:ring-2 focus:outline-none transition-all ${
+                              isFieldInvalid('unitLength') 
+                                ? 'border-red-500 ring-2 ring-red-100 text-slate-900 ring-offset-0' 
+                                : 'bg-slate-50 border-slate-100 focus:ring-blue-100 focus:bg-white'
+                            }`} 
+                          />
+                        </div>
+                      </div>
+                      
+                      {/* Axle configuration selector option */}
+                      <div className="mt-2">
+                        <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Axles configuration</span>
+                        <div className="flex gap-1.5">
+                          {[1, 2, 3].map(cx => (
+                            <label 
+                              key={cx} 
+                              className={`flex-1 flex items-center justify-center gap-1 px-2.5 py-1.5 rounded-xl border text-[10px] font-bold transition-all cursor-pointer ${
+                                (localHaul.axles || 1) === cx 
+                                  ? 'bg-indigo-50 border-indigo-200 text-indigo-700 font-black' 
+                                  : 'bg-slate-50 border-slate-100 text-slate-500 hover:bg-slate-100'
+                              }`}
+                            >
+                              <input 
+                                type="radio" 
+                                name="axles" 
+                                value={cx} 
+                                checked={(localHaul.axles || 1) === cx} 
+                                onChange={() => {
+                                  const updated = { ...localHaul, axles: cx };
+                                  setLocalHaul(updated);
+                                  localHaulRef.current = updated;
+                                  saveHaulData(updated);
+                                }}
+                                className="sr-only"
+                              />
+                              <span>{cx} Axle{cx > 1 ? 's' : ''}</span>
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6 animate-none">
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">
+                        {currentOperatorType === 'Hot Shot' ? 'Load Weight (lbs)*' : 'GVWR (lbs)*'}
+                      </label>
+                      <input 
+                        name="grossWeight" 
+                        type="number" 
+                        value={localHaul.grossWeight || ''} 
+                        onChange={handleHaulChange} 
+                        onBlur={() => saveHaulData()} 
+                        placeholder="0"
+                        className={`w-full border rounded-2xl px-4 py-3 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-blue-100 transition-all ${
+                            isFieldInvalid('grossWeight')
+                              ? 'border-red-500 ring-2 ring-red-100 text-slate-900 ring-offset-0' 
+                              : 'bg-slate-50 border-slate-100'
+                          }`} 
+                      />
+                    </div>
+                    {currentOperatorType !== 'Hot Shot' && (
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Scale/Dry Weight (lbs)*</label>
+                        <input 
+                          name="scaleWeight" 
+                          type="number" 
+                          value={localHaul.scaleWeight || ''} 
+                          onChange={handleHaulChange} 
+                          onBlur={() => saveHaulData()} 
+                          placeholder="0"
+                          className={`w-full border rounded-2xl px-4 py-3 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-blue-100 transition-all ${
+                              isFieldInvalid('scaleWeight')
+                                ? 'border-red-500 ring-2 ring-red-100 text-slate-900 ring-offset-0' 
+                                : 'bg-slate-50 border-slate-100'
+                            }`} 
+                        />
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
 
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
                 <div className="space-y-1.5">
@@ -945,7 +2125,12 @@ export default function ActiveWorkspace({ haul, onClose, customFolders = [], onU
                     name="pickUpLocation" 
                     value={localHaul.pickUpLocation || ''} 
                     onChange={(val) => {
-                      setLocalHaul(prev => ({ ...prev, pickUpLocation: val }));
+                      isDirtyRef.current = true;
+                      setLocalHaul(prev => {
+                        const updated = { ...prev, pickUpLocation: val };
+                        localHaulRef.current = updated;
+                        return updated;
+                      });
                     }}
                     onBlur={saveHaulData}
                     placeholder="City, ST" 
@@ -997,7 +2182,12 @@ export default function ActiveWorkspace({ haul, onClose, customFolders = [], onU
                     name="deliveryLocation" 
                     value={localHaul.deliveryLocation || ''} 
                     onChange={(val) => {
-                      setLocalHaul(prev => ({ ...prev, deliveryLocation: val }));
+                      isDirtyRef.current = true;
+                      setLocalHaul(prev => {
+                        const updated = { ...prev, deliveryLocation: val };
+                        localHaulRef.current = updated;
+                        return updated;
+                      });
                     }}
                     onBlur={saveHaulData}
                     placeholder="City, ST" 
@@ -1084,8 +2274,14 @@ export default function ActiveWorkspace({ haul, onClose, customFolders = [], onU
                       name="ratePerMile" 
                       type="number" 
                       step="0.01" 
-                      value={localHaul.ratePerMile === undefined ? '' : localHaul.ratePerMile} 
+                      value={localHaul.ratePerMile === undefined || localHaul.ratePerMile === '' || Number(localHaul.ratePerMile) === 0 ? '' : localHaul.ratePerMile} 
                       onChange={handleHaulChange} 
+                      placeholder="0.00"
+                      onFocus={(e) => {
+                        if (Number(e.target.value) === 0) {
+                          e.target.select();
+                        }
+                      }}
                       onBlur={(e) => {
                         const val = parseFloat(e.target.value);
                         if (!isNaN(val)) {
@@ -1095,6 +2291,16 @@ export default function ActiveWorkspace({ haul, onClose, customFolders = [], onU
                               ...e.target,
                               name: 'ratePerMile',
                               value: val.toFixed(2),
+                              type: 'number'
+                            }
+                          } as any);
+                        } else {
+                          handleHaulChange({
+                            ...e,
+                            target: {
+                              ...e.target,
+                              name: 'ratePerMile',
+                              value: '',
                               type: 'number'
                             }
                           } as any);
@@ -1153,24 +2359,49 @@ export default function ActiveWorkspace({ haul, onClose, customFolders = [], onU
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
-                  <div className="p-5 bg-blue-50 rounded-3xl border border-blue-100 flex flex-col justify-center">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div className="p-4 bg-blue-50 rounded-3xl border border-blue-100 flex flex-col justify-center">
                     <div className="flex flex-col gap-1">
-                      <span className="text-[10px] font-bold text-blue-900 uppercase">Calculated AVG MPG per trip</span>
+                      <span className="text-[10px] font-bold text-blue-900 uppercase">CALCULATED AVG MPG (LOADED AND DEADHEAD)</span>
                       <span className={`text-xl font-bold ${stats.mpg > 6 ? 'text-green-600' : 'text-blue-600'}`}>
                         {stats.mpg > 0 ? stats.mpg.toFixed(1) : '--.-'}
                       </span>
                     </div>
                   </div>
 
-                  <div className="p-5 bg-indigo-50 rounded-3xl border border-indigo-100 flex flex-col justify-center">
-                    <div className="flex flex-col gap-1">
-                      <span className="text-[10px] font-bold text-indigo-900 uppercase">Average MPG based on fuel pumped</span>
-                      <span className={`text-xl font-bold ${stats.calculatedMpg > 6 ? 'text-green-600' : 'text-indigo-600'}`}>
-                        {stats.calculatedMpg > 0 ? stats.calculatedMpg.toFixed(1) : '--.-'}
+                  <div className="p-4 bg-teal-50 rounded-3xl border border-teal-100 flex flex-col justify-between items-start gap-1">
+                    <div className="flex flex-col gap-1 w-full">
+                      <span className="text-[10px] font-bold text-teal-900 uppercase">MY SIMILAR HISTORY (AVG LOADED MPG)</span>
+                      <span className={`text-xl font-bold ${myAvgSimilarMpg > 0 ? 'text-green-600' : 'text-slate-400'}`}>
+                        {myAvgSimilarMpg > 0 ? `${myAvgSimilarMpg.toFixed(1)}` : '--.-'}
                       </span>
                     </div>
+                    {mySimilarHauls.length > 0 && (
+                      <button 
+                        type="button"
+                        onClick={() => setShowMySimilarUnits(true)}
+                        className="mt-2 py-1.5 px-3 rounded-xl bg-teal-600 hover:bg-teal-700 font-extrabold text-[9px] uppercase tracking-wider text-white transition-all shadow-xs hover:shadow-md cursor-pointer self-start"
+                      >
+                        👁️ View {Math.min(5, mySimilarHauls.length)} Units
+                      </button>
+                    )}
                   </div>
+
+                   <div className="p-4 bg-indigo-50 rounded-3xl border border-indigo-150 flex flex-col justify-between items-start gap-1">
+                     <div className="flex flex-col gap-1 w-full">
+                       <span className="text-[9px] font-extrabold text-indigo-950 uppercase tracking-tight block leading-tight">Registered User AVG (Similar Power Unit and Towable Unit)</span>
+                       <span className={`text-xl font-bold ${industryAvgMpg > 6 ? 'text-green-600' : 'text-indigo-600'}`}>
+                         {industryAvgMpg > 0 ? industryAvgMpg.toFixed(1) : '--.-'}
+                       </span>
+                     </div>
+                     <button 
+                       type="button"
+                       onClick={() => setShowTopConfigs(true)}
+                       className="mt-2.5 py-1.5 px-3 rounded-xl bg-indigo-600 hover:bg-indigo-700 font-extrabold text-[9px] uppercase tracking-wider text-white transition-all shadow-xs hover:shadow-md cursor-pointer self-start"
+                     >
+                       🔥 Top 5 Setups
+                     </button>
+                   </div>
                 </div>
 
                 {/* Delivery Efficiency Bar-Style Graph Component */}
@@ -1184,12 +2415,14 @@ export default function ActiveWorkspace({ haul, onClose, customFolders = [], onU
                   }
                   const defaultIndexPrice = isDiesel ? fuelPrices.diesel : fuelPrices.gas;
 
-                  // Compute average pump price from logged fuel expenses
+                  // Compute weighted average pump price from logged fuel expenses
                   const fuelExpenses = expenses.filter(e => e.category === 'Fuel');
-                  const totalRecordedFuelDollars = fuelExpenses.reduce((sum, e) => sum + Number(e.amount || 0), 0);
-                  const totalRecordedFuelGallons = fuelExpenses.reduce((sum, e) => sum + Number(e.gallons || 0), 0);
-                  const actualAvgPumpPrice = totalRecordedFuelGallons > 0 
-                    ? (totalRecordedFuelDollars / totalRecordedFuelGallons) 
+                  const validFuelExpenses = fuelExpenses.filter(e => Number(e.gallons || 0) > 0 && Number(e.amount || 0) > 0);
+                  const totalRecordedFuelDollars = validFuelExpenses.reduce((sum, e) => sum + Number(e.amount || 0), 0);
+                  const totalRecordedFuelGallons = validFuelExpenses.reduce((sum, e) => sum + Number(e.gallons || 0), 0);
+
+                  const actualAvgPumpPrice = totalRecordedFuelGallons > 0
+                    ? (totalRecordedFuelDollars / totalRecordedFuelGallons)
                     : 0;
 
                   let currentFuelPrice = defaultIndexPrice;
@@ -1204,35 +2437,51 @@ export default function ActiveWorkspace({ haul, onClose, customFolders = [], onU
                   }
 
                   // Compute expected base MPG according to vehicle profile configuration specs
-                  const { expectedMpg: expectedVehicleMpg } = getExpectedVehicleMpg(userProfile, localHaul, traversedStates); //
+                  const { expectedMpg: expectedVehicleMpg, tireAdjustment } = getExpectedVehicleMpg(userProfile, localHaul, traversedStates);
                   
-                  // Removed duplicate calculation
+                  // Dynamically determine the 100 Target based on similar history and registered user avg
+                  const dynamic100TargetMpg = (() => {
+                    if (myAvgSimilarMpg > 0 && peersAvgSimilarMpg > 0) {
+                      return (myAvgSimilarMpg + peersAvgSimilarMpg) / 2;
+                    } else if (myAvgSimilarMpg > 0) {
+                      return myAvgSimilarMpg;
+                    } else if (peersAvgSimilarMpg > 0) {
+                      return peersAvgSimilarMpg;
+                    }
+                    return expectedVehicleMpg;
+                  })();
 
-                  // Define responsive color bar bounds dynamically anchored around expectedVehicleMpg
-                  const minMpgBound = Math.max(2.0, expectedVehicleMpg - 4.0);
-                  const maxMpgBound = expectedVehicleMpg + 4.0;
+                  // Define dynamic Towing Efficiency Rating score mapping relative to dynamic100TargetMpg
+                  // A score of 100 represents achieving exactly the calibrated dynamic target MPG.
+                  const getScoreForMpg = (val: number) => {
+                    if (dynamic100TargetMpg <= 0 || val <= 0) return 0;
+                    return (val / dynamic100TargetMpg) * 100;
+                  };
 
-                  // Mid-ticks exactly evenly spaced
-                  const midTick1 = expectedVehicleMpg - 2.0;
-                  const midTick2 = expectedVehicleMpg;
-                  const midTick3 = expectedVehicleMpg + 2.0;
+                  // The color bar bounds correspond to relative performance index scores from 60 to 140
+                  // 100 is perfectly in the middle representing calibrated target MPG
+                  const minScoreBound = 60;
+                  const maxScoreBound = 140;
 
-                  const getPercentageForMpg = (val: number) => {
-                    return Math.min(100, Math.max(0, ((val - minMpgBound) / (maxMpgBound - minMpgBound)) * 100));
+                  const getPercentageForScore = (score: number) => {
+                    return Math.min(100, Math.max(0, ((score - minScoreBound) / (maxScoreBound - minScoreBound)) * 100));
                   };
 
                   const activeLoadedMpg = Number(localHaul.loadedMpg || 0);
+                  const activeScore = getScoreForMpg(activeLoadedMpg);
+                  const historyScore = getScoreForMpg(myAvgSimilarMpg);
+
                   const activeCostPerMile = activeLoadedMpg > 0 ? (currentFuelPrice / activeLoadedMpg) : 0;
                   const expectedCostPerMile = expectedVehicleMpg > 0 ? (currentFuelPrice / expectedVehicleMpg) : 0;
 
                   const costDifference = expectedCostPerMile - activeCostPerMile;
                   const dynamicRating = activeLoadedMpg === 0 
                     ? 'No Entry'
-                    : activeLoadedMpg < midTick1 
+                    : activeScore < 85 
                       ? 'Poor' 
-                      : activeLoadedMpg < midTick2 
+                      : activeScore < 98 
                         ? 'Sub-par' 
-                        : activeLoadedMpg < midTick3 
+                        : activeScore < 115 
                           ? 'Optimal' 
                           : 'Exceptional (Elite)';
 
@@ -1248,7 +2497,7 @@ export default function ActiveWorkspace({ haul, onClose, customFolders = [], onU
                         <div>
                           <div className="flex items-center gap-2">
                             <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider">
-                              RV Delivery Efficiency Meter
+                              Towing Efficiency Index
                             </h4>
                             <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" title="Dynamic Price Sync Active" />
                           </div>
@@ -1256,32 +2505,79 @@ export default function ActiveWorkspace({ haul, onClose, customFolders = [], onU
                           {/* Vehicle Spec Subtitle */}
                           {profileString ? (
                             <div className="flex flex-col gap-0.5 mt-0.5">
-                              <p className="text-[10px] text-indigo-600 font-bold flex items-center gap-1">
-                                🚜 Calibrated Equipment Spec: {profileString} ({isDiesel ? 'Diesel' : 'Gasoline'})
+                              <p className="text-[10px] text-indigo-600 font-bold flex items-center gap-1.5">
+                                <PickupTruckIcon className="w-3.5 h-3.5 text-indigo-600" /> Calibrated Performance Target: {expectedVehicleMpg.toFixed(1)} MPG ({isDiesel ? 'Diesel' : 'Gasoline'})
                               </p>
                               <p className="text-[9px] text-slate-500 font-semibold italic">
-                                Targets adjusted for Unit Weight ({localHaul.scaleWeight || 0} lbs) {traversedStates.length > 0 ? `+ Route Terrain (${traversedStates.join(', ')})` : ''}
+                                Targets adjusted for Unit Weight ({localHaul.scaleWeight || 0} lbs) {traversedStates.length > 0 ? `+ Route Terrain (${traversedStates.join(', ')})` : ''}. Baseline Index 100 represents target.
                               </p>
                             </div>
                           ) : (
                             <p className="text-[10px] text-slate-400 mt-0.5 font-medium leading-normal">
-                              ⚠️ Using generic standard baselines. Customize your vehicle specs in <strong>Settings</strong> for higher precision.
+                              ⚠️ Using generic standard baselines. Customize your vehicle specs in <strong>Settings</strong> for custom dynamic indices.
                             </p>
                           )}
                         </div>
                         
                         {/* Rating Flag */}
                         {activeLoadedMpg > 0 && (
-                          <span className={`px-2.5 py-1 text-[9px] font-black rounded-full uppercase tracking-wider self-start sm:self-auto ${
-                            dynamicRating.includes('Exceptional')
-                              ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
-                              : dynamicRating.includes('Optimal')
-                                ? 'bg-blue-100 text-blue-800 border border-blue-200'
-                                : 'bg-amber-100 text-amber-800 border border-amber-200'
-                          }`}>
-                            {dynamicRating}
-                          </span>
+                          <div className="flex flex-col items-end gap-1">
+                            <span className={`px-2.5 py-1 text-[9px] font-black rounded-full uppercase tracking-wider self-start sm:self-auto ${
+                              dynamicRating.includes('Exceptional')
+                                ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+                                : dynamicRating.includes('Optimal')
+                                  ? 'bg-blue-100 text-blue-800 border border-blue-200'
+                                  : 'bg-amber-100 text-amber-800 border border-amber-200'
+                            }`}>
+                              {dynamicRating} ({activeScore.toFixed(0)} TPI)
+                            </span>
+                          </div>
                         )}
+                      </div>
+
+                      {/* Target explanation helper banner */}
+                      <div className="bg-slate-100/60 border border-slate-200/50 rounded-2xl p-3 sm:p-4 text-[11px] leading-relaxed text-slate-600 space-y-1.5 shadow-xs">
+                        <p className="font-bold text-slate-800 flex items-center gap-1.5 text-xs">
+                          <Info className="w-3.5 h-3.5 text-indigo-600" />
+                          Understanding the MPG Targets
+                        </p>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5 pt-1.5 divide-y md:divide-y-0 md:divide-x divide-slate-200/60">
+                          <div className="space-y-0.5">
+                            <span className="font-bold text-indigo-600 flex items-center gap-1.5"><PickupTruckIcon className="w-3.5 h-3.5 text-indigo-600" /> Calibrated Performance Target ({expectedVehicleMpg.toFixed(1)} MPG):</span>
+                            <p className="text-slate-500 text-[10.5px]">
+                              The physical, theoretical fuel economy based purely on your truck specs, trailer type, scale weights, aerodynamic wind profiles, and Route Terrain.
+                            </p>
+                          </div>
+                          <div className="space-y-0.5 pt-2.5 md:pt-0 md:pl-3.5">
+                            <span className="font-bold text-amber-600 flex items-center gap-1">🎯 100 Target ({dynamic100TargetMpg.toFixed(1)} MPG):</span>
+                            <p className="text-slate-500 text-[10.5px]">
+                              A dynamic, real-world baseline blended from your personal similar trips history and peer network statistics. This represents the target to achieve exactly 100 TPI.
+                            </p>
+                          </div>
+                        </div>
+
+                        {/* Tire specification impact note */}
+                        <div className="pt-2.5 border-t border-slate-200/50 flex flex-wrap items-center gap-2 text-[10.5px]">
+                          <span className="font-bold text-slate-700 flex items-center gap-1.5"><TireWheelIcon className="w-4 h-4" /> Tire Spec Calibration Impact:</span>
+                          {userProfile?.tireMake || userProfile?.tireType || userProfile?.tireSize ? (
+                            <>
+                              <span className={`px-2 py-0.5 rounded-md font-extrabold text-[10px] ${
+                                tireAdjustment >= 0 
+                                  ? 'bg-emerald-50 text-emerald-700 border border-emerald-200/60' 
+                                  : 'bg-rose-50 text-rose-700 border border-rose-200/60'
+                              }`}>
+                                {tireAdjustment >= 0 ? '+' : ''}{tireAdjustment.toFixed(2)} MPG
+                              </span>
+                              <span className="text-slate-500 font-medium bg-slate-200/50 px-1.5 py-0.5 rounded text-[9.5px]">
+                                {[userProfile.tireMake, userProfile.tireType, userProfile.tireSize].filter(Boolean).join(' / ')}
+                              </span>
+                            </>
+                          ) : (
+                            <span className="text-amber-600 bg-amber-50 border border-amber-200/60 px-2 py-0.5 rounded-md font-medium text-[10px] animate-pulse">
+                              💡 Adjustments inactive. Enter your tire manufacturer, model & size in the settings menu for calibrated rolling resistance.
+                            </span>
+                          )}
+                        </div>
                       </div>
 
                       {/* Spectrum Chromebook Bar */}
@@ -1299,60 +2595,62 @@ export default function ActiveWorkspace({ haul, onClose, customFolders = [], onU
                           <div className="absolute left-[66.7%] top-0 h-full w-[1.5px] bg-white/30" />
                         </div>
 
-                        {/* Numeric Scale labels matching Fuel spectrum bounds */}
+                        {/* Numeric Scale labels matching relative Towing Performance Index */}
                         <div className="flex justify-between items-center text-[9px] text-slate-400 font-bold mt-2.5 px-0.5">
-                          <span>{minMpgBound.toFixed(1)} MPG (Poor)</span>
-                          <span>{midTick1.toFixed(1)} MPG</span>
-                          <span>{midTick2.toFixed(1)} MPG (Baseline)</span>
-                          <span>{midTick3.toFixed(1)} MPG (Optimal)</span>
-                          <span>{maxMpgBound.toFixed(1)}+ MPG (Elite)</span>
+                          <span>60 TPI (Poor)</span>
+                          <span>80 TPI</span>
+                          <span>100 TPI (Target Met)</span>
+                          <span>120 TPI (Optimal)</span>
+                          <span>140+ TPI (Elite)</span>
                         </div>
 
-                        {/* Pointer 1: Active Unit Loaded MPG */}
+                        {/* Pointer 1: Active Unit Loaded MPG Rating */}
                         {activeLoadedMpg > 0 && (
                           <div 
                             className="absolute top-2.5 flex flex-col items-center transition-all duration-700 ease-out z-30"
                             style={{ 
-                              left: `${getPercentageForMpg(activeLoadedMpg)}%`,
+                              left: `${getPercentageForScore(activeScore)}%`,
                               transform: 'translateX(-50%)'
                             }}
                           >
                             <div className="px-2 py-0.5 bg-indigo-600 text-white text-[9px] font-black rounded-md shadow-md mb-1 whitespace-nowrap border border-indigo-500/30 flex items-center gap-1">
                               <span className="w-1.5 h-1.5 bg-green-400 rounded-full animate-pulse" />
-                              {activeLoadedMpg.toFixed(1)} MPG (Loaded)
+                              Score: {activeScore.toFixed(0)} ({activeLoadedMpg.toFixed(1)} MPG)
                             </div>
                             <div className="w-[3px] h-5 bg-indigo-600 rounded-full border border-white shadow-xs" />
                           </div>
                         )}
 
-                        {/* Pointer 2: EXPECTED Vehicle profile baseline MPG */}
+                        {/* Pointer 2: EXPECTED Target Baseline (Fixed at exactly 100 index) */}
                         <div 
                           className="absolute top-0.5 h-12 w-[2px] transition-all duration-700 ease-out z-20 group"
                           style={{ 
-                            left: `${getPercentageForMpg(expectedVehicleMpg)}%`,
+                            left: `${getPercentageForScore(100)}%`,
                           }}
                         >
                           <div className="absolute -top-4.5 left-1/2 -translate-x-1/2 px-1.5 py-0.5 bg-amber-500 text-[8px] font-extrabold text-white border border-amber-400 shadow-xs rounded whitespace-nowrap">
-                            {expectedVehicleMpg.toFixed(1)} MPG (My Calibrated Target)
+                            100 Target ({dynamic100TargetMpg.toFixed(1)} MPG)
                           </div>
                           <div className="w-[2px] h-full bg-amber-500 border-x border-white" />
                         </div>
 
-                        {/* Pointer 3: Community Average Fleet baseline */}
-                        {communityAvgMpg > 0 && (
+                        {/* Pointer 3: My Similar Trips Historical Avg */}
+                        {myAvgSimilarMpg > 0 && (
                           <div 
-                            className="absolute bottom-1 h-12 w-[1.5px] transition-all z-20"
+                            className="absolute bottom-1 h-12 w-[1.5px] transition-all duration-700 ease-out z-20"
                             style={{ 
-                              left: `${getPercentageForMpg(communityAvgMpg)}%`,
+                              left: `${getPercentageForScore(historyScore)}%`,
                             }}
                           >
-                            <div className="absolute -bottom-4.5 left-1/2 -translate-x-1/2 px-1.5 py-0.5 bg-emerald-50 text-emerald-700 border border-emerald-100 shadow-xs rounded text-[8px] font-bold whitespace-nowrap flex items-center gap-0.5">
-                              <span>Fleet Avg:</span>
-                              <span className="font-extrabold">{communityAvgMpg.toFixed(1)} MPG</span>
+                            <div className="w-[1.5px] h-full bg-teal-500 border-x border-white" />
+                            <div className="absolute -bottom-4.5 left-1/2 -translate-x-1/2 px-1.5 py-0.5 bg-teal-50 border border-teal-100 text-teal-700 shadow-xs rounded text-[8px] font-bold whitespace-nowrap flex items-center gap-0.5">
+                              <span>My History:</span>
+                              <span className="font-extrabold">{historyScore.toFixed(0)} ({myAvgSimilarMpg.toFixed(1)} MPG)</span>
                             </div>
-                            <div className="w-[1.5px] h-full bg-emerald-500 border-x border-white" />
                           </div>
                         )}
+
+
                       </div>
 
                       {/* Live Dynamic Fuel & Cost-per-Mile panel */}
@@ -1420,7 +2718,7 @@ export default function ActiveWorkspace({ haul, onClose, customFolders = [], onU
                                 costDifference >= 0 ? 'bg-green-50 text-green-600' : 'bg-rose-50 text-rose-600'
                               }`}>
                                 {costDifference >= 0 ? 'Optimal' : 'Over Target'}
-                                {costDifference >= 0 ? `-$${Math.abs(costDifference).toFixed(2)}/mi` : `+$${Math.abs(costDifference).toFixed(2)}/mi`}
+                                {costDifference >= 0 ? `-$${Math.abs(costDifference).toFixed(3)}/mi` : `+$${Math.abs(costDifference).toFixed(3)}/mi`}
                               </span>
                             )}
                           </span>
@@ -1428,15 +2726,36 @@ export default function ActiveWorkspace({ haul, onClose, customFolders = [], onU
                       </div>
 
                       {/* Subtitle notes detailing RV Transport scope */}
-                      <div className="pt-3.5 border-t border-slate-100 grid grid-cols-1 sm:grid-cols-2 gap-4 text-[10px] text-slate-500 font-medium leading-relaxed">
+                      <div className="pt-4 border-t border-slate-100 grid grid-cols-1 md:grid-cols-3 gap-4 text-[10px] text-slate-500 font-medium leading-relaxed">
                         <div>
-                          <span className="font-bold text-slate-600 block mb-0.5">⚙️ Fuel Price Adaptation</span>
-                          CPM metrics recalculate automatically as retail prices fluctuate on our live national exchange.
+                          <span className="font-bold text-slate-700 flex items-center gap-1 mb-1">
+                            <span>⚙️</span> Fuel price Index
+                          </span>
+                          <span className="block text-slate-500">
+                            Recalculated automatically as retail pump prices fluctuate across our live, state-by-state fuel database. This is used as the baseline price to calculate live operating costs.
+                          </span>
                         </div>
                         <div>
-                          <span className="font-bold text-slate-600 block mb-0.5">📊 All Registered Drivers</span>
-                          Aggregated across <span className="font-semibold text-emerald-600">live user logs</span> inside this platform to optimize dynamic metrics and calculations.
+                          <span className="font-bold text-slate-700 flex items-center gap-1 mb-1">
+                            <span>🚛</span> Active Cost Per Mile (CPM)
+                          </span>
+                          <span className="block text-slate-500">
+                            Your <span className="font-semibold text-slate-700">actual fuel cost per mile</span> for this trip, calculated using this haul's exact Loaded MPG: <code className="bg-slate-100 px-1 py-0.5 rounded font-mono text-[9px] text-indigo-600">[Fuel Price ÷ Entered Loaded MPG]</code>.
+                          </span>
                         </div>
+                        <div>
+                          <span className="font-bold text-slate-700 flex items-center gap-1 mb-1">
+                            <span>🎯</span> Calibrated Vehicle Base CPM
+                          </span>
+                          <span className="block text-slate-500">
+                            Your <span className="font-semibold text-slate-700">target fuel cost per mile</span> under ideal conditions for your specific truck spec, unit scale weight, and route terrain: <code className="bg-slate-100 px-1 py-0.5 rounded font-mono text-[9px] text-amber-600">[Fuel Price ÷ Calibrated Target MPG]</code>.
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="pt-3.5 border-t border-dashed border-slate-100 text-[10px] text-slate-500 font-medium leading-relaxed">
+                        <span className="font-bold text-slate-600 block mb-0.5">📊 Benchmark Data Source</span>
+                        Aggregates live platform-wide historical data—excluding deadhead MPG—to calculate dynamic averages. Specifically, the efficiency meter aggregates <span className="font-semibold text-emerald-600">Loaded Miles Per Gallon (Loaded MPG)</span> categorized by similar route terrain (Mountainous, Plains, or Flat) and unit scale weight classes to calibrate realistic, empirical benchmarks.
                       </div>
                     </div>
                   );
@@ -1840,15 +3159,20 @@ export default function ActiveWorkspace({ haul, onClose, customFolders = [], onU
           {/* Mobile Bottom Action Bar */}
           <div className="sm:hidden sticky bottom-0 left-0 right-0 p-4 pb-safe-6 bg-white border-t border-slate-100 shadow-[0_-4px_20px_-10px_rgba(0,0,0,0.1)] z-50 flex gap-3 mt-8">
             <button
-              onClick={onClose}
+              onClick={handleClose}
               className="flex-1 flex items-center justify-center gap-2 px-4 py-3.5 bg-slate-100 text-slate-700 rounded-2xl text-sm font-bold active:bg-slate-200 transition-all"
             >
               <X className="w-5 h-5" />
               <span>Close</span>
             </button>
             <button
-              onClick={handleMarkCompleted}
-              className="flex-[2] flex items-center justify-center gap-2 px-4 py-3.5 bg-emerald-600 active:bg-emerald-700 text-white rounded-2xl text-sm font-bold shadow-sm transition-all"
+              onClick={isMarkCompletedDisabled ? undefined : handleMarkCompleted}
+              disabled={isMarkCompletedDisabled}
+              className={`flex-[2] flex items-center justify-center gap-2 px-4 py-3.5 rounded-2xl text-sm font-bold shadow-sm transition-all ${
+                isMarkCompletedDisabled 
+                  ? 'bg-slate-200 text-slate-400 cursor-not-allowed opacity-75' 
+                  : 'bg-emerald-600 active:bg-emerald-700 text-white cursor-pointer'
+              }`}
             >
               <CheckCircle className="w-5 h-5" />
               <span>{(haul.status === 'Completed' || haul.status === 'Finalized') ? 'Save & Close' : 'Mark Completed'}</span>
@@ -1858,8 +3182,13 @@ export default function ActiveWorkspace({ haul, onClose, customFolders = [], onU
           {/* Desktop/Tablet Bottom Action Button */}
           <div className="hidden sm:flex justify-end pt-4 pb-12">
             <button
-              onClick={handleMarkCompleted}
-              className="flex items-center justify-center gap-2 px-8 py-4 bg-emerald-600 hover:bg-emerald-700 text-white rounded-2xl text-sm font-bold shadow-sm hover:shadow-md transition-all cursor-pointer"
+              onClick={isMarkCompletedDisabled ? undefined : handleMarkCompleted}
+              disabled={isMarkCompletedDisabled}
+              className={`flex items-center justify-center gap-2 px-8 py-4 rounded-2xl text-sm font-bold shadow-sm transition-all ${
+                isMarkCompletedDisabled 
+                  ? 'bg-slate-200 text-slate-400 cursor-not-allowed opacity-75' 
+                  : 'bg-emerald-600 hover:bg-emerald-700 hover:shadow-md text-white cursor-pointer'
+              }`}
             >
               <CheckCircle className="w-5 h-5" />
               <span>{(haul.status === 'Completed' || haul.status === 'Finalized') ? 'Save & Close Trip' : 'Mark Trip Completed'}</span>
@@ -1901,6 +3230,184 @@ export default function ActiveWorkspace({ haul, onClose, customFolders = [], onU
                 </span>
               </div>
             </footer>
+          </div>
+        </div>
+      )}
+
+      {/* Top 5 Registered Users Configurations Modal */}
+      {showTopConfigs && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-[10000] animate-fade-in" id="top-configs-modal">
+          <div className="bg-white rounded-[32px] border border-slate-100 shadow-2xl max-w-md w-full p-6 sm:p-8 space-y-6 animate-scale-in">
+            <div className="flex justify-between items-start">
+              <div>
+                <h3 className="text-base font-black text-slate-800 tracking-tight flex items-center gap-2">
+                  🏆 Top 5 Power & Towable Setups
+                </h3>
+                <p className="text-[10px] text-slate-500 font-bold mt-1 uppercase tracking-wider">
+                  Registered App Users Benchmarks
+                </p>
+              </div>
+              <button 
+                type="button"
+                onClick={() => setShowTopConfigs(false)}
+                className="p-1 px-2 hover:bg-slate-50 rounded-lg text-slate-400 hover:text-slate-600 font-bold text-sm transition-colors cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              {(() => {
+                const sortedList = top5GlobalSetups;
+
+                if (sortedList.length === 0) {
+                  return (
+                    <div className="text-center py-8 px-4 bg-slate-50 rounded-2xl border border-dashed border-slate-200">
+                      <p className="text-xs font-bold text-slate-500">No sufficient configuration data logged yet.</p>
+                      <p className="text-[10px] text-slate-400 mt-1">Complete your first haul to log your platform metrics!</p>
+                    </div>
+                  );
+                }
+
+                return sortedList.map((item, idx) => {
+                  const make = item.make || 'Generic';
+                  const model = item.model || 'Power Unit';
+                  const year = item.year ? `${item.year} ` : '';
+                  const drw = item.drw || 'SRW';
+                  const drive = item.drive || '4x4';
+                  const wb = item.wb || 'LWB';
+                  const axleStr = item.axles ? `${item.axles} Axle` : 'Unit';
+
+                  return (
+                    <div key={idx} className="p-3.5 bg-slate-50/80 border border-slate-100 rounded-2xl flex items-center justify-between gap-3 shadow-xs">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <div className="w-6 h-6 rounded-lg bg-indigo-50 flex items-center justify-center font-extrabold text-indigo-700 text-[10px] shrink-0">
+                          #{idx + 1}
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-xs font-bold text-slate-800 tracking-tight truncate">
+                            {year}{make} {model} {drw} ({drive}, {wb})
+                          </p>
+                          <p className="text-[9px] text-slate-500 font-semibold mt-0.5 truncate">
+                            Towable: {item.unitType || 'RV'} • {axleStr} • {Number(item.scaleWeight || 0).toLocaleString()} lbs
+                          </p>
+                        </div>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <span className="text-[10px] font-black text-emerald-700 bg-emerald-50 px-2 py-1 rounded-lg border border-emerald-100">
+                          {Number(item.avgMpg).toFixed(1)} AVG MPG
+                        </span>
+                      </div>
+                    </div>
+                  );
+                });
+              })()}
+            </div>
+
+            <div className="pt-2">
+              <button
+                type="button"
+                onClick={() => setShowTopConfigs(false)}
+                className="w-full py-3 px-4 bg-slate-100 hover:bg-slate-200 font-black text-xs text-slate-700 rounded-2xl uppercase tracking-wider transition-colors cursor-pointer"
+              >
+                Close Benchmarks
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MY Similar Historical Logs Modal */}
+      {showMySimilarUnits && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-[10000] animate-fade-in" id="my-similar-units-modal">
+          <div className="bg-white rounded-[32px] border border-slate-100 shadow-2xl max-w-md w-full p-6 sm:p-8 space-y-6 animate-scale-in">
+            <div className="flex justify-between items-start">
+              <div>
+                <h3 className="text-base font-black text-slate-800 tracking-tight flex items-center gap-2">
+                  📊 Last 5 Similar Historical Trips
+                </h3>
+                <p className="text-[10px] text-teal-600 font-bold mt-1 uppercase tracking-wider">
+                  Personal Logging History Benchmarks
+                </p>
+              </div>
+              <button 
+                type="button"
+                onClick={() => setShowMySimilarUnits(false)}
+                className="p-1 px-2 hover:bg-slate-50 rounded-lg text-slate-400 hover:text-slate-600 font-bold text-sm transition-colors cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="space-y-3 max-h-[360px] overflow-y-auto pr-1">
+              {(() => {
+                const sortedList = [...mySimilarHauls]
+                  .sort((a, b) => {
+                    const dateA = a.pickUpDate ? new Date(a.pickUpDate).getTime() : 0;
+                    const dateB = b.pickUpDate ? new Date(b.pickUpDate).getTime() : 0;
+                    return dateB - dateA;
+                  })
+                  .slice(0, 5);
+
+                if (sortedList.length === 0) {
+                  return (
+                    <div className="text-center py-8 px-4 bg-slate-50 rounded-2xl border border-dashed border-slate-200">
+                      <p className="text-xs font-bold text-slate-500">No matching historical logs found.</p>
+                      <p className="text-[10px] text-slate-400 mt-1">These stats calibrate automatically once you complete similar trips.</p>
+                    </div>
+                  );
+                }
+
+                return sortedList.map((item, idx) => {
+                  const pickUpStr = item.pickUpLocation || 'Unknown';
+                  const deliveryStr = item.deliveryLocation || 'Unknown';
+                  const pickUpDateStr = item.pickUpDate ? new Date(item.pickUpDate).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : 'No date';
+                  const loadNo = item.loadNumber ? `#${item.loadNumber}` : `Trip #${idx + 1}`;
+                  const weightVal = Number(item.scaleWeight || 0);
+
+                  return (
+                    <div key={idx} className="p-3.5 bg-slate-50/80 border border-slate-100 rounded-2xl flex items-center justify-between gap-3 shadow-xs">
+                      <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                        <div className="w-6 h-6 rounded-lg bg-teal-50 flex items-center justify-center font-extrabold text-teal-700 text-[10px] shrink-0">
+                          {idx + 1}
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-xs font-extrabold text-slate-800 tracking-tight truncate">
+                              {loadNo}
+                            </span>
+                            <span className="text-[9px] text-slate-400 font-bold shrink-0">
+                              {pickUpDateStr}
+                            </span>
+                          </div>
+                          <p className="text-[10px] text-slate-600 font-medium mt-1 truncate">
+                            {pickUpStr} ➔ {deliveryStr}
+                          </p>
+                          <p className="text-[9px] text-slate-400 font-bold uppercase mt-0.5 tracking-wider">
+                            Trailer: {item.unitType || 'RV'} • {weightVal > 0 ? `${weightVal.toLocaleString()} lbs` : 'No scale weight'}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <span className="text-[10px] font-black text-teal-700 bg-teal-50 px-2 py-1 rounded-lg border border-teal-100">
+                          {Number(item.loadedMpg || item.milesPerGallon || 0).toFixed(1)} MPG
+                        </span>
+                      </div>
+                    </div>
+                  );
+                });
+              })()}
+            </div>
+
+            <div className="pt-2">
+              <button
+                type="button"
+                onClick={() => setShowMySimilarUnits(false)}
+                className="w-full py-3 px-4 bg-teal-600 hover:bg-teal-700 font-black text-xs text-white rounded-2xl uppercase tracking-wider transition-colors shadow-xs hover:shadow-md cursor-pointer"
+              >
+                Close Logs
+              </button>
+            </div>
           </div>
         </div>
       )}

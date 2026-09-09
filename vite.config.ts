@@ -4,11 +4,15 @@ import path from 'path';
 import {defineConfig, loadEnv} from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
 import fs from 'fs';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 export default defineConfig(({mode}) => {
   const env = loadEnv(mode, '.', '');
   const pkg = JSON.parse(fs.readFileSync(path.resolve(__dirname, 'package.json'), 'utf8'));
-  const version = `v${pkg.version}-${env.COMMIT_SHA ? env.COMMIT_SHA.substring(0, 7) : Date.now().toString().slice(-6)}`;
+  const version = `v${pkg.version}`;
 
   // Write version to version.txt
   try {
@@ -23,22 +27,24 @@ export default defineConfig(({mode}) => {
       tailwindcss(),
       VitePWA({
         registerType: 'autoUpdate',
+        injectRegister: false,
         workbox: {
           cleanupOutdatedCaches: true,
           skipWaiting: true,
           clientsClaim: true,
-          navigateFallbackDenylist: [/^\/api/],
+          maximumFileSizeToCacheInBytes: 5000000,
+          navigateFallbackDenylist: [/\/api/],
           runtimeCaching: [
             {
-              urlPattern: /^\/api\//,
+              urlPattern: /\/api/,
               handler: 'NetworkOnly',
             }
           ]
         },
         manifest: {
-          name: 'Transport Genius',
-          short_name: 'Transport Genius',
-          description: 'Transport Genius Operational Database and PWA',
+          name: 'Transport LogIQ',
+          short_name: 'Transport LogIQ',
+          description: 'Transport LogIQ Operational Database and PWA',
           theme_color: '#ffffff',
           icons: [
             {

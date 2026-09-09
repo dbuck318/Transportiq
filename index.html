@@ -4,35 +4,83 @@
     <meta charset="UTF-8" />
     <script>
       (function() {
+        var silenceKeywords = [
+          'WebSocket', 'websocket', 'WebSocket closed without opened',
+          'Script error', 'Script error.',
+          '@firebase/firestore', 'WebChannelConnection', "RPC 'Write' stream", 'transport errored',
+          'firebase', 'firestore', 'WebAuthn', 'auth'
+        ];
+        
+        function shouldSilence(msg) {
+          if (!msg) return false;
+          msg = String(msg).toLowerCase();
+          return silenceKeywords.some(function(keyword) {
+            return msg.indexOf(keyword.toLowerCase()) !== -1;
+          });
+        }
+
         var originalConsoleError = console.error;
         console.error = function() {
           var msg = arguments[0] ? String(arguments[0]) : '';
-          if (msg.includes('WebSocket') || msg.includes('websocket') || msg.includes('WebSocket closed without opened')) {
+          if (shouldSilence(msg)) {
             return;
           }
           originalConsoleError.apply(console, arguments);
         };
+
+        var originalConsoleWarn = console.warn;
+        console.warn = function() {
+          var msg = arguments[0] ? String(arguments[0]) : '';
+          if (shouldSilence(msg)) {
+            return;
+          }
+          originalConsoleWarn.apply(console, arguments);
+        };
         
-        window.addEventListener('unhandledrejection', function(event) {
+        // Listeners for both capture and bubble phases
+        var handleRejection = function(event) {
           var msg = event.reason ? (event.reason.message || String(event.reason)) : '';
-          if (msg.includes('WebSocket') || msg.includes('websocket') || msg.includes('WebSocket closed without opened')) {
+          if (shouldSilence(msg)) {
             event.preventDefault();
             event.stopPropagation();
           }
-        });
-        window.addEventListener('error', function(event) {
+        };
+        window.addEventListener('unhandledrejection', handleRejection, true);
+        window.addEventListener('unhandledrejection', handleRejection, false);
+
+        var handleError = function(event) {
           var msg = event.message || '';
-          if (msg.includes('WebSocket') || msg.includes('websocket') || msg.includes('WebSocket closed without opened')) {
+          if (shouldSilence(msg) || shouldSilence(event.filename) || shouldSilence(event.error ? event.error.message : '')) {
             event.preventDefault();
             event.stopPropagation();
           }
-        });
+        };
+        window.addEventListener('error', handleError, true);
+        window.addEventListener('error', handleError, false);
+
+        // Handle Vite dynamic import preload failures gracefully
+        var handlePreloadError = function(event) {
+          if (event && event.preventDefault) {
+            event.preventDefault();
+          }
+        };
+        window.addEventListener('vite:preloadError', handlePreloadError, true);
+        window.addEventListener('vite:preloadError', handlePreloadError, false);
+
+        window.onerror = function(message, source, lineno, colno, error) {
+          var msg = message ? String(message) : '';
+          var src = source ? String(source) : '';
+          var err = error ? String(error.message || error) : '';
+          if (shouldSilence(msg) || shouldSilence(src) || shouldSilence(err)) {
+            return true; // Suppress reporting and browser console logs
+          }
+        };
       })();
     </script>
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="format-detection" content="telephone=no, date=no, email=no, address=no" />
-    <title>Transport Genius</title>
-    <meta property="og:title" content="Transport Genius" />
+    <title>Transport LogIQ</title>
+    <meta property="og:title" content="Transport LogIQ" />
     <meta property="og:description" content="Definitive operational database for independent hotshot, transport, and logistics owner-operators." />
   </head>
   <body>

@@ -11,7 +11,8 @@ interface UserProfile {
   email: string;
   displayName: string;
   createdAt: any;
-  lastLogin: any;
+  lastLogin?: any;
+  lastActive?: any;
 }
 
 interface AdminPanelProps {
@@ -120,7 +121,7 @@ export default function AdminPanel({ isSuperAdmin, currentUserUid }: AdminPanelP
             </div>
             <h3 className="text-sm font-bold uppercase tracking-tight">Software Build</h3>
           </div>
-          <p className="text-lg font-mono font-bold text-slate-900">{currentVersion || 'v1.4.15-dev'}</p>
+          <p className="text-lg font-mono font-bold text-slate-900">{currentVersion || 'v1.5.2'}</p>
           <p className="text-[10px] text-slate-500 mt-1 uppercase font-bold tracking-widest">Global CDN Version</p>
         </div>
       </div>
@@ -160,8 +161,27 @@ export default function AdminPanel({ isSuperAdmin, currentUserUid }: AdminPanelP
                       {u.createdAt?.toDate ? u.createdAt.toDate().toLocaleDateString() : 'Historical'}
                     </div>
                   </td>
-                  <td className="p-4 text-slate-500">
-                    {u.lastLogin?.toDate ? u.lastLogin.toDate().toLocaleString() : '---'}
+                  <td className="p-4 text-slate-500 font-medium">
+                    {(() => {
+                      const activeTime = u.lastActive?.toDate ? u.lastActive.toDate() : (u.lastLogin?.toDate ? u.lastLogin.toDate() : null);
+                      if (!activeTime) return '---';
+                      
+                      const diffMs = Date.now() - activeTime.getTime();
+                      // Show glowing "Active Now" indicator if active in last 45 seconds
+                      if (diffMs > 0 && diffMs < 45000) {
+                        return (
+                          <div className="flex items-center gap-1.5 text-emerald-600 font-bold">
+                            <span className="relative flex h-2 w-2">
+                              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                              <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                            </span>
+                            Active Now
+                          </div>
+                        );
+                      }
+                      
+                      return <span className="font-mono text-[11px]">{activeTime.toLocaleString()}</span>;
+                    })()}
                   </td>
                   <td className="p-4 text-right">
                     <span className="bg-green-50 text-green-700 border border-green-200 px-2 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider">VERIFIED</span>

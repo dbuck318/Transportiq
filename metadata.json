@@ -1,5 +1,5 @@
 {
-  "name": "Transport Genius",
+  "name": "Transport LogIQ",
   "description": "Definitive operational database for independent hotshot, transport, and logistics owner-operators. Features OCR expense parsing, spreadsheet ingestion, and real-time profitability auditing.",
   "requestFramePermissions": ["camera"],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]

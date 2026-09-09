@@ -1,51 +1,149 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 
 export function useVersionMonitor() {
   const [updateAvailable, setUpdateAvailable] = useState(false);
   const [currentVersion, setCurrentVersion] = useState<string | null>(null);
+  const [latestServerVersion, setLatestServerVersion] = useState<string | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [justUpdated, setJustUpdated] = useState(false);
+  const [lastSeenVersion, setLastSeenVersion] = useState<string | null>(null);
   
   const clientVersion = (import.meta as any).env?.VITE_APP_VERSION || 'development';
 
   useEffect(() => {
-    setCurrentVersion(clientVersion);
+    if (clientVersion !== 'development') {
+      const lastSeen = localStorage.getItem('last_seen_version');
+      setLastSeenVersion(lastSeen);
+      const cleanClient = clientVersion.trim().replace(/^v/, '');
+      const wasManuallyUpdated = sessionStorage.getItem('just_manually_updated') === 'true';
+      
+      if (wasManuallyUpdated) {
+        sessionStorage.removeItem('just_manually_updated');
+        localStorage.setItem('last_seen_version', clientVersion);
+        setJustUpdated(false);
+        return;
+      }
+
+      if (!lastSeen) {
+        setJustUpdated(true);
+        localStorage.setItem('last_seen_version', clientVersion);
+      } else {
+        const cleanLastSeen = lastSeen.trim().replace(/^v/, '');
+        if (cleanLastSeen !== cleanClient) {
+          setJustUpdated(true);
+        }
+      }
+    }
+  }, [clientVersion]);
+
+  const acknowledgeJustUpdated = () => {
+    setJustUpdated(false);
+    localStorage.setItem('last_seen_version', clientVersion);
+  };
+
+  useEffect(() => {
+    const formatted = clientVersion.startsWith('v') ? clientVersion : `v${clientVersion}`;
+    setCurrentVersion(formatted);
 
     const checkVersion = async () => {
+      const now = Date.now();
+      
+      // Fetch version from server on every mount to make sure updates are immediately detected
+      setChecking(true);
       try {
-        const res = await fetch('/api/version', { cache: 'no-store' });
-        if (!res.ok) return;
+        const res = await fetch(`/api/version?t=${now}`, { cache: 'no-store' });
+        if (!res.ok) {
+          console.warn("Version check endpoint health issues:", res.status);
+          setChecking(false);
+          return;
+        }
         
         const data = await res.json();
         const serverVersion = data.version;
-        
-        if (serverVersion && serverVersion !== clientVersion) {
-          // Client version is different from server version!
-          setUpdateAvailable(true);
+
+        if (serverVersion) {
+          localStorage.setItem('last_version_check_time', now.toString());
+          localStorage.setItem('cached_latest_version', serverVersion);
+          setLatestServerVersion(serverVersion);
+
+          const dismissed = sessionStorage.getItem('dismissed_version');
+          const lastUpdated = sessionStorage.getItem('last_updated_version');
+
+          const cleanServer = serverVersion.trim().replace(/^v/, '');
+          const cleanClient = clientVersion.trim().replace(/^v/, '');
+          const cleanDismissed = dismissed ? dismissed.trim().replace(/^v/, '') : null;
+          const cleanLastUpdated = lastUpdated ? lastUpdated.trim().replace(/^v/, '') : null;
+
+          if (
+            serverVersion !== 'development' &&
+            cleanDismissed !== cleanServer &&
+            dismissed !== 'all' &&
+            cleanLastUpdated !== cleanServer &&
+            lastUpdated !== 'all' &&
+            cleanServer !== cleanClient
+          ) {
+            setUpdateAvailable(true);
+            setJustUpdated(false);
+          } else {
+            setUpdateAvailable(false);
+          }
         }
       } catch (err) {
-        // Silently ignore network errors (e.g. offline)
+        console.warn("Version check failed:", err);
+      } finally {
+        setChecking(false);
       }
     };
 
-    // Check version immediately
+    // Check version immediately on mount
     checkVersion();
-    
-    // Then check every 3 seconds for snappy and fast updates
-    const intervalId = setInterval(checkVersion, 3000);
-    
-    // And also check when the window becomes visible again
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible') {
-        checkVersion();
-      }
-    };
-    
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    
-    return () => {
-      clearInterval(intervalId);
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-    };
   }, [clientVersion]);
 
-  return { updateAvailable, currentVersion };
+  const forceCheck = async () => {
+    setChecking(true);
+    try {
+      const now = Date.now();
+      const res = await fetch(`/api/version?t=${now}`, { cache: 'no-store' });
+      if (res.ok) {
+        const data = await res.json();
+        const serverVersion = data.version;
+        if (serverVersion) {
+          localStorage.setItem('last_version_check_time', now.toString());
+          localStorage.setItem('cached_latest_version', serverVersion);
+          setLatestServerVersion(serverVersion);
+
+          const cleanServer = serverVersion.trim().replace(/^v/, '');
+          const cleanClient = clientVersion.trim().replace(/^v/, '');
+          
+          if (serverVersion !== 'development' && cleanServer !== cleanClient) {
+            setUpdateAvailable(true);
+            setJustUpdated(false);
+            return { updated: true, version: serverVersion };
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("Manual check failed:", e);
+    } finally {
+      setChecking(false);
+    }
+    return { updated: false, version: latestServerVersion || clientVersion };
+  };
+
+  const dismissUpdate = () => {
+    setUpdateAvailable(false);
+    if (latestServerVersion) {
+      sessionStorage.setItem('dismissed_version', latestServerVersion);
+    } else {
+      sessionStorage.setItem('dismissed_version', 'all');
+    }
+  };
+
+  const markVersionUpdated = (version: string) => {
+    const v = (version && version !== 'all') ? version : (latestServerVersion || 'all');
+    sessionStorage.setItem('last_updated_version', v);
+    setUpdateAvailable(false);
+  };
+
+  return { updateAvailable, currentVersion, latestServerVersion, dismissUpdate, markVersionUpdated, forceCheck, checking, justUpdated, acknowledgeJustUpdated, lastSeenVersion };
 }

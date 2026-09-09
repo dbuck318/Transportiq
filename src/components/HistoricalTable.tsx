@@ -9,6 +9,55 @@ import { doc, updateDoc } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 
 import ImportDataButton from './ImportDataButton';
+import { parseCleanWeight } from '../lib/calculations';
+
+function calculateGenericIndustryMpg(h: any) {
+  // Base towing average: 9.0 base default
+  const baseStandardMpg = 9.0;
+  const scaleWeightVal = parseCleanWeight(h.scaleWeight);
+  let weightCorrection = 0;
+  if (scaleWeightVal > 0) {
+    weightCorrection = -((Math.max(0, scaleWeightVal - 5000)) / 1000) * 0.15;
+  } else {
+    weightCorrection = -((7500 - 5000) / 1000) * 0.15;
+  }
+
+  // Identify state terrain if possible
+  let terrainCorrection = 0;
+  const pickUp = h.pickUpLocation || '';
+  const delivery = h.deliveryLocation || '';
+  const matchPick = pickUp.match(/\b([A-Z]{2})\b/);
+  const matchDel = delivery.match(/\b([A-Z]{2})\b/);
+  const states = Array.from(new Set([matchPick ? matchPick[1] : null, matchDel ? matchDel[1] : null].filter(Boolean)));
+  
+  if (states.length > 0) {
+    const mountainStates = ["CO", "UT", "WY", "ID", "MT", "WA", "OR", "CA", "NV", "NM", "AZ"];
+    const plainsStates = ["KS", "NE", "SD", "ND", "OK", "IA", "TX"];
+    
+    let mtCount = 0;
+    let plainsCount = 0;
+    states.forEach((st: any) => {
+      if (mountainStates.includes(st)) mtCount++;
+      if (plainsStates.includes(st)) plainsCount++;
+    });
+
+    if (mtCount > 0) terrainCorrection += -(0.35 * mtCount);
+    if (plainsCount > 0) terrainCorrection += -(0.18 * plainsCount);
+  }
+
+  const finalMpg = baseStandardMpg + weightCorrection + terrainCorrection;
+  
+  // Real-world physical ceilings for generic towing configurations on highways
+  let maxPhysicalMpgCap = 16.0;
+  if (scaleWeightVal >= 15000) maxPhysicalMpgCap = 7.5;
+  else if (scaleWeightVal >= 12000) maxPhysicalMpgCap = 9.0;
+  else if (scaleWeightVal >= 9000) maxPhysicalMpgCap = 10.5;
+  else if (scaleWeightVal >= 6000) maxPhysicalMpgCap = 12.0;
+  else if (scaleWeightVal >= 3000) maxPhysicalMpgCap = 14.0;
+  else maxPhysicalMpgCap = 16.0;
+
+  return Math.min(maxPhysicalMpgCap, Math.max(4.0, Number(finalMpg.toFixed(1))));
+}
 
 interface Props {
   hauls: Haul[];
@@ -203,7 +252,7 @@ export default function HistoricalTable({
     const ws = XLSX.utils.json_to_sheet(mappedData);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Hauls");
-    XLSX.writeFile(wb, `Transport_Genius_Export_${new Date().toISOString().split('T')[0]}.xlsx`);
+    XLSX.writeFile(wb, `Transport_LogIQ_Export_${new Date().toISOString().split('T')[0]}.xlsx`);
     setShowExportMenu(false);
   };
 
@@ -245,7 +294,7 @@ export default function HistoricalTable({
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(16);
       doc.setTextColor(15, 23, 42); // slate-900
-      doc.text('Transport Genius Unit Report', 15, y);
+      doc.text('Transport LogIQ Unit Report', 15, y);
 
       doc.setFontSize(9);
       doc.setFont('helvetica', 'normal');
@@ -297,7 +346,7 @@ export default function HistoricalTable({
         ['Deadhead Miles:', `${(h.deadheadMiles || 0).toLocaleString()} mi`],
         ['Gross Rating (GVWR):', h.grossWeight ? `${h.grossWeight.toLocaleString()} lbs` : 'N/A'],
         ['Scale/Dry Weight:', h.scaleWeight ? `${h.scaleWeight.toLocaleString()} lbs` : 'N/A'],
-        ['Avg Fuel Pump MPG:', h.milesPerGallon ? `${h.milesPerGallon.toFixed(1)} mpg` : 'N/A'],
+        ['Industry Avg MPG:', calculateGenericIndustryMpg(h) ? `${calculateGenericIndustryMpg(h).toFixed(1)} mpg` : 'N/A'],
         ['Rate Per Mile (RPM):', `$${(h.ratePerMile || 0).toFixed(2)} / mi`],
       ];
 

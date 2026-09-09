@@ -1,5 +1,22 @@
 import { Haul, Expense } from '../types';
 
+export function parseCleanWeight(val: any): number {
+  if (typeof val === 'number') return isNaN(val) ? 0 : val;
+  if (!val) return 0;
+  
+  // Clean string: remove commas, convert to lowercase
+  const str = String(val).toLowerCase().replace(/,/g, '');
+  
+  // Try to find digits
+  const matches = str.match(/\d+(\.\d+)?/g);
+  if (matches) {
+    // Sum numbers found. E.g., "12,500 and 3 lb" -> [12500, 3] -> sum is 12503!
+    const sum = matches.reduce((acc, curr) => acc + Number(curr), 0);
+    return sum;
+  }
+  return 0;
+}
+
 export function calculateTotals(
   haul: Haul, 
   expenses: Expense[], 
@@ -9,7 +26,7 @@ export function calculateTotals(
   const loadedMiles = Number(haul.loadedMiles || 0);
   const deadheadMiles = Number(haul.deadheadMiles || 0);
   const rate = Number(haul.ratePerMile || 0);
-  const scaleWt = Number(haul.scaleWeight || 0);
+  const scaleWt = parseCleanWeight(haul.scaleWeight);
 
   const grossRevenue = Number((loadedMiles * rate).toFixed(2));
 
@@ -49,32 +66,34 @@ export function calculateTotals(
   // Manual Weighted MPG calculation based on Loaded MPG, actual trip miles, Deadhead miles, and Deadhead MPG
   const loadedMpg = Number(haul.loadedMpg || 0);
   const deadheadMpg = Number(haul.deadheadMpg || 0);
+
+  // Segment distances
+  const finalDeadheadMiles = Number(haul.deadheadMiles || 0);
+  const finalLoadedMiles = Number(haul.loadedMiles || 0) > 0 
+    ? Number(haul.loadedMiles) 
+    : Math.max(0, Number(haul.totalMiles || 0) - finalDeadheadMiles);
+
+  const finalTotalMiles = (finalLoadedMiles + finalDeadheadMiles) > 0
+    ? (finalLoadedMiles + finalDeadheadMiles)
+    : Number(haul.totalMiles || 0);
   
   let weightedMpg = 0;
   
   if (loadedMpg > 0 && deadheadMpg > 0) {
-    if (miles > 0) {
-      const lm = Math.max(0, miles - deadheadMiles);
-      const loadedGallons = lm / loadedMpg;
-      const deadheadGallons = deadheadMiles / deadheadMpg;
-      const totalGallonsUsed = loadedGallons + deadheadGallons;
-      weightedMpg = totalGallonsUsed > 0 ? miles / totalGallonsUsed : 0;
+    if (finalTotalMiles > 0) {
+      weightedMpg = ((loadedMpg * finalLoadedMiles) + (deadheadMpg * finalDeadheadMiles)) / finalTotalMiles;
     } else {
       weightedMpg = (loadedMpg + deadheadMpg) / 2;
     }
-  } else if (loadedMpg > 0 && (deadheadMiles === 0 || deadheadMpg === 0)) {
-    weightedMpg = loadedMpg;
-  } else if (deadheadMpg > 0 && (miles === 0 || (miles - deadheadMiles) <= 0 || loadedMpg === 0)) {
-    weightedMpg = deadheadMpg;
   } else if (loadedMpg > 0) {
     weightedMpg = loadedMpg;
   } else if (deadheadMpg > 0) {
     weightedMpg = deadheadMpg;
   }
 
-  // Use manual MPG if provided, otherwise weighted, otherwise fallback to calculated
-  const manualMpg = Number(haul.milesPerGallon || 0);
-  const mpg = manualMpg > 0 ? manualMpg : (weightedMpg > 0 ? weightedMpg : calculatedMpg);
+  // Priority: 1. Dynamic weighted average from entered MPG values, 2. Dynamic calculated MPG from fuel expenses, 3. Saved baseline milesPerGallon
+  const savedMpgFallback = Number(haul.milesPerGallon || 0);
+  const mpg = weightedMpg > 0 ? weightedMpg : (calculatedMpg > 0 ? calculatedMpg : savedMpgFallback);
   
   // Weight Efficiency Index (WEI)
   const wei = (mpg > 0 && scaleWt > 0) ? (mpg / (scaleWt / 1000)) : 0;

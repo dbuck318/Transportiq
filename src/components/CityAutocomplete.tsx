@@ -14,6 +14,7 @@ export default function CityAutocomplete({ name, value, onChange, onBlur, placeh
   const inputRef = useRef<HTMLInputElement>(null);
   const placesLib = useMapsLibrary('places');
   const coreLib = useMapsLibrary('core');
+
   const [autocomplete, setAutocomplete] = useState<google.maps.places.Autocomplete | null>(null);
 
   // Initialize Autocomplete widget

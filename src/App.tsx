@@ -1,9 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { auth, logout, db, handleFirestoreError, OperationType } from './lib/firebase';
 import { onAuthStateChanged, User } from 'firebase/auth';
-import { collection, query, where, onSnapshot, orderBy, addDoc, serverTimestamp, doc, getDoc, updateDoc } from 'firebase/firestore';
+import { collection, query, where, onSnapshot, orderBy, addDoc, serverTimestamp, doc, getDoc, updateDoc, setDoc } from 'firebase/firestore';
 import { Haul } from './types';
-import { LogOut, Shield, AlertCircle, Plus, LayoutDashboard, History, ExternalLink, Key, Fingerprint, Download, Menu, X, Folder, Trash2, GripVertical, ChevronDown, ChevronRight, Settings } from 'lucide-react';
+import { LogOut, Shield, AlertCircle, Plus, LayoutDashboard, History, ExternalLink, Key, Fingerprint, Download, Menu, X, Folder, Trash2, GripVertical, ChevronDown, ChevronRight, Settings, ChevronUp } from 'lucide-react';
 import PickupTrailerIcon from './components/PickupTrailerIcon';
 import { motion, AnimatePresence } from 'motion/react';
 import ActiveWorkspace from './components/ActiveWorkspace';
@@ -14,7 +14,8 @@ import AdminPanel from './components/AdminPanel';
 import BiometricSettings from './components/BiometricSettings';
 import { APIProvider } from '@vis.gl/react-google-maps';
 import { useVersionMonitor } from './hooks/useVersionMonitor';
-import { RefreshCw } from 'lucide-react';
+import { getUpdatesSince, AppUpdate } from './data/updates';
+import { RefreshCw, CheckCircle2, Truck } from 'lucide-react';
 
 const GOOGLE_MAPS_API_KEY = process.env.GOOGLE_MAPS_PLATFORM_KEY || '';
 const hasValidKey = Boolean(GOOGLE_MAPS_API_KEY) && GOOGLE_MAPS_API_KEY !== 'YOUR_API_KEY';
@@ -47,7 +48,47 @@ export default function App() {
   const [hauls, setHauls] = useState<Haul[]>([]);
   const [activeHaulId, setActiveHaulId] = useState<string | null>(null);
   const [versionCount, setVersionCount] = useState<number>(0);
+  const [operatorType, setOperatorType] = useState<'RV Tow Away' | 'RV Multi Haul' | 'Hot Shot' | null>(null);
+  const [showOperatorPopup, setShowOperatorPopup] = useState<boolean>(false);
   const prevHaulsSignature = React.useRef<string>('');
+  const lastActiveTimestampRef = React.useRef<number>(0);
+
+  const reportActivity = React.useCallback(() => {
+    if (!user) return;
+    const now = Date.now();
+    // Throttle Firestore writes to once every 30 seconds to stay within generous quotas
+    if (now - lastActiveTimestampRef.current > 30000) {
+      lastActiveTimestampRef.current = now;
+      const userRef = doc(db, 'users', user.uid);
+      updateDoc(userRef, { lastActive: serverTimestamp() }).catch(() => {
+        setDoc(userRef, { lastActive: serverTimestamp() }, { merge: true }).catch(() => {});
+      });
+    }
+  }, [user]);
+
+  // Track global interactions to record activity in real time
+  useEffect(() => {
+    if (!user) return;
+
+    // Report initial activity when user logs in or page loads
+    reportActivity();
+
+    const handleInteraction = () => {
+      reportActivity();
+    };
+
+    window.addEventListener('mousedown', handleInteraction, { passive: true });
+    window.addEventListener('keydown', handleInteraction, { passive: true });
+    window.addEventListener('touchstart', handleInteraction, { passive: true });
+    window.addEventListener('scroll', handleInteraction, { passive: true });
+
+    return () => {
+      window.removeEventListener('mousedown', handleInteraction);
+      window.removeEventListener('keydown', handleInteraction);
+      window.removeEventListener('touchstart', handleInteraction);
+      window.removeEventListener('scroll', handleInteraction);
+    };
+  }, [user, reportActivity]);
 
   const incrementVersion = () => {
     setVersionCount(prev => {
@@ -95,6 +136,8 @@ export default function App() {
   const [draggedOverFolderIndex, setDraggedOverFolderIndex] = useState<number | null>(null);
   const [folderToDelete, setFolderToDelete] = useState<string | null>(null);
   const [isFoldersExpanded, setIsFoldersExpanded] = useState<boolean>(true);
+  const [isAddingFolderSidebar, setIsAddingFolderSidebar] = useState(false);
+  const [newFolderSidebarName, setNewFolderSidebarName] = useState('');
 
   useEffect(() => {
     if (user) {
@@ -114,6 +157,11 @@ export default function App() {
     if (user) {
       try {
         localStorage.setItem(`lod_custom_folders_${user.uid}`, JSON.stringify(folders));
+        const userRef = doc(db, 'users', user.uid);
+        updateDoc(userRef, { customFolders: folders }).catch(err => {
+          console.warn('Failed to update customFolders in Firestore via updateDoc:', err);
+          setDoc(userRef, { customFolders: folders }, { merge: true }).catch(() => {});
+        });
       } catch (e) {
         console.warn('Failed to persist custom folders:', e);
       }
@@ -148,10 +196,12 @@ export default function App() {
   const handleDragStart = (index: number, e: React.DragEvent) => {
     setDraggedFolderIndex(index);
     e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', index.toString());
   };
 
   const handleDragOver = (index: number, e: React.DragEvent) => {
     e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
     if (draggedFolderIndex !== index) {
       setDraggedOverFolderIndex(index);
     }
@@ -164,16 +214,62 @@ export default function App() {
 
   const handleDrop = (index: number, e: React.DragEvent) => {
     e.preventDefault();
-    if (draggedFolderIndex === null || draggedFolderIndex === index) {
+    const sourceIndexStr = e.dataTransfer.getData('text/plain');
+    let sourceIndex = draggedFolderIndex;
+    if (sourceIndex === null && sourceIndexStr !== '') {
+      sourceIndex = parseInt(sourceIndexStr, 10);
+    }
+    if (sourceIndex === null || sourceIndex === index) {
       setDraggedOverFolderIndex(null);
       return;
     }
     const reordered = [...allHistoryFolders];
-    const [item] = reordered.splice(draggedFolderIndex, 1);
+    const [item] = reordered.splice(sourceIndex, 1);
     reordered.splice(index, 0, item);
     saveCustomFoldersInApp(reordered, true);
     setDraggedFolderIndex(null);
     setDraggedOverFolderIndex(null);
+  };
+
+  const handleTouchStart = (index: number, e: React.TouchEvent) => {
+    setDraggedFolderIndex(index);
+  };
+
+  const handleTouchMove = (index: number, e: React.TouchEvent) => {
+    if (draggedFolderIndex === null) return;
+    if (e.cancelable) {
+      e.preventDefault();
+    }
+    const touch = e.touches[0];
+    const element = document.elementFromPoint(touch.clientX, touch.clientY);
+    if (!element) return;
+    const folderEl = element.closest('[data-folder-index]');
+    if (folderEl) {
+      const targetIndex = parseInt(folderEl.getAttribute('data-folder-index') || '', 10);
+      if (!isNaN(targetIndex) && targetIndex !== draggedFolderIndex) {
+        setDraggedOverFolderIndex(targetIndex);
+      }
+    }
+  };
+
+  const handleTouchEnd = () => {
+    if (draggedFolderIndex !== null && draggedOverFolderIndex !== null && draggedFolderIndex !== draggedOverFolderIndex) {
+      const reordered = [...allHistoryFolders];
+      const [item] = reordered.splice(draggedFolderIndex, 1);
+      reordered.splice(draggedOverFolderIndex, 0, item);
+      saveCustomFoldersInApp(reordered, true);
+    }
+    setDraggedFolderIndex(null);
+    setDraggedOverFolderIndex(null);
+  };
+
+  const handleMoveFolder = (index: number, direction: number) => {
+    const targetIndex = index + direction;
+    if (targetIndex < 0 || targetIndex >= allHistoryFolders.length) return;
+    const reordered = [...allHistoryFolders];
+    const [item] = reordered.splice(index, 1);
+    reordered.splice(targetIndex, 0, item);
+    saveCustomFoldersInApp(reordered, true);
   };
 
   const confirmDeleteFolder = async () => {
@@ -205,7 +301,51 @@ export default function App() {
     setFolderToDelete(null);
   };
 
-  const { updateAvailable, currentVersion } = useVersionMonitor();
+  const { updateAvailable, currentVersion, latestServerVersion, dismissUpdate, markVersionUpdated, justUpdated, acknowledgeJustUpdated, lastSeenVersion } = useVersionMonitor();
+
+  const [isAutoUpdating, setIsAutoUpdating] = useState(false);
+  const [showUpdatePopup, setShowUpdatePopup] = useState(false);
+
+  useEffect(() => {
+    if (updateAvailable) {
+      setShowUpdatePopup(true);
+    } else {
+      setShowUpdatePopup(false);
+    }
+  }, [updateAvailable]);
+
+  const triggerAppUpdate = async () => {
+    if (isAutoUpdating) return;
+    setIsAutoUpdating(true);
+    
+    const now = Date.now();
+    localStorage.setItem('last_lod_auto_update_time', now.toString());
+    sessionStorage.setItem('just_manually_updated', 'true');
+    
+    try {
+      if ('caches' in window) {
+        const keys = await caches.keys();
+        await Promise.all(keys.map(k => caches.delete(k)));
+      }
+      if ('serviceWorker' in navigator) {
+        const regs = await navigator.serviceWorker.getRegistrations();
+        for (const reg of regs) {
+          try {
+            await reg.unregister();
+          } catch (e) {
+            console.warn("SW unregister error:", e);
+          }
+        }
+      }
+    } catch (err) {
+      console.error("Update clean up failed:", err);
+    } finally {
+      if (latestServerVersion) {
+        markVersionUpdated(latestServerVersion);
+      }
+      window.location.reload();
+    }
+  };
 
   useEffect(() => {
     const handleBeforeInstallPrompt = (e: Event) => {
@@ -229,20 +369,59 @@ export default function App() {
     }
   };
 
-  const SUPER_ADMIN_EMAIL = atob('ZGF2aWQuYS5idWNrbGV5NzFAZ21haWwuY29t');
+  const SUPER_ADMIN_EMAILS = [
+    atob('ZGF2aWQuYS5idWNrbGV5NzFAZ21haWwuY29t'), // david.a.buckley71@gmail.com
+    'support@transportiq.com'
+  ];
 
   useEffect(() => {
-    return onAuthStateChanged(auth, (u) => {
+    let unsubProfile: (() => void) | null = null;
+    const unsubAuth = onAuthStateChanged(auth, (u) => {
       setUser(u);
       setLoading(false);
+      
+      if (unsubProfile) {
+        unsubProfile();
+        unsubProfile = null;
+      }
+
       if (u) {
-        setIsSuperAdmin(u.email === SUPER_ADMIN_EMAIL);
+        const emailLower = (u.email || '').toLowerCase();
+        const isSuper = SUPER_ADMIN_EMAILS.map(e => e.toLowerCase()).includes(emailLower);
+        setIsSuperAdmin(isSuper);
         
-        // Load versionCount from user profile, fall back to localStorage
+        // Load versionCount, customFolders and operatorType from user profile using real-time onSnapshot
         const userRef = doc(db, 'users', u.uid);
-        getDoc(userRef).then(userSnap => {
+        unsubProfile = onSnapshot(userRef, (userSnap) => {
           if (userSnap.exists()) {
             const data = userSnap.data();
+
+            // Sync customFolders
+            if (Array.isArray(data.customFolders)) {
+              setCustomFolders(data.customFolders);
+              localStorage.setItem(`lod_custom_folders_${u.uid}`, JSON.stringify(data.customFolders));
+            } else {
+              try {
+                const stored = localStorage.getItem(`lod_custom_folders_${u.uid}`);
+                if (stored) {
+                  const parsed = JSON.parse(stored);
+                  if (Array.isArray(parsed) && parsed.length > 0) {
+                    setCustomFolders(parsed);
+                    updateDoc(userRef, { customFolders: parsed }).catch(() => {});
+                  }
+                }
+              } catch (e) {}
+            }
+
+            // Sync operatorType
+            if (data.operatorType) {
+              setOperatorType(data.operatorType);
+              setShowOperatorPopup(false);
+            } else {
+              setOperatorType('RV Tow Away');
+              setShowOperatorPopup(true);
+            }
+
             if (typeof data.versionCount === 'number') {
               setVersionCount(data.versionCount);
               localStorage.setItem(`lod_version_count_${u.uid}`, data.versionCount.toString());
@@ -253,26 +432,43 @@ export default function App() {
               updateDoc(userRef, { versionCount: localVal }).catch(() => {});
             }
           } else {
+            // First time registration or no user profile document
+            setOperatorType('RV Tow Away');
+            setShowOperatorPopup(true);
+
             const stored = localStorage.getItem(`lod_version_count_${u.uid}`);
             setVersionCount(stored ? parseInt(stored, 10) : 0);
+
+            try {
+              const storedFolders = localStorage.getItem(`lod_custom_folders_${u.uid}`);
+              setCustomFolders(storedFolders ? JSON.parse(storedFolders) : []);
+            } catch {
+              setCustomFolders([]);
+            }
           }
-        }).catch(() => {
-          const stored = localStorage.getItem(`lod_version_count_${u.uid}`);
-          setVersionCount(stored ? parseInt(stored, 10) : 0);
+        }, (error) => {
+          console.error("Profile snapshot error:", error);
         });
 
         const adminRef = doc(db, 'admins', u.uid);
         getDoc(adminRef).then(adminSnap => {
-          setIsAdmin(adminSnap.exists() || u.email === SUPER_ADMIN_EMAIL);
+          setIsAdmin(adminSnap.exists() || isSuper);
         }).catch((err) => {
-          setIsAdmin(u.email === SUPER_ADMIN_EMAIL);
+          setIsAdmin(isSuper);
         });
       } else {
         setIsAdmin(false);
         setIsSuperAdmin(false);
         setVersionCount(0);
+        setOperatorType(null);
+        setShowOperatorPopup(false);
       }
     });
+
+    return () => {
+      unsubAuth();
+      if (unsubProfile) unsubProfile();
+    };
   }, []);
 
   useEffect(() => {
@@ -320,6 +516,17 @@ export default function App() {
           deadheadMiles: Number(d.deadheadMiles ?? 0),
           loadedMpg: Number(d.loadedMpg ?? 0),
           deadheadMpg: Number(d.deadheadMpg ?? 0),
+          axles: Number(d.axles ?? 1),
+          unitLength: d.unitLength !== undefined && d.unitLength !== null ? Number(d.unitLength) : undefined,
+          operatorType: d.operatorType ?? undefined,
+          unitNumber2: d.unitNumber2 ?? '',
+          unitNumber3: d.unitNumber3 ?? '',
+          unitLength2: d.unitLength2 !== undefined && d.unitLength2 !== null ? Number(d.unitLength2) : undefined,
+          unitLength3: d.unitLength3 !== undefined && d.unitLength3 !== null ? Number(d.unitLength3) : undefined,
+          grossWeight2: d.grossWeight2 !== undefined && d.grossWeight2 !== null ? Number(d.grossWeight2) : undefined,
+          grossWeight3: d.grossWeight3 !== undefined && d.grossWeight3 !== null ? Number(d.grossWeight3) : undefined,
+          scaleWeight2: d.scaleWeight2 !== undefined && d.scaleWeight2 !== null ? Number(d.scaleWeight2) : undefined,
+          scaleWeight3: d.scaleWeight3 !== undefined && d.scaleWeight3 !== null ? Number(d.scaleWeight3) : undefined,
         } as Haul;
       });
       setHauls(data);
@@ -343,6 +550,7 @@ export default function App() {
       const newHaul = {
         unitNumber: '',
         unitType: '',
+        unitLength: 0,
         loadNumber: '',
         customerName: '',
         folder: '',
@@ -367,6 +575,7 @@ export default function App() {
         ownerId: user.uid,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
+        operatorType: operatorType || 'RV Tow Away'
       };
       const docRef = await addDoc(collection(db, path), newHaul);
       setActiveHaulId(docRef.id);
@@ -416,6 +625,27 @@ export default function App() {
 
   if (loading) return <div className="min-h-screen bg-white flex items-center justify-center font-sans text-slate-400">Loading your dashboard...</div>;
 
+  if (isAutoUpdating) {
+    return (
+      <div className="min-h-screen bg-slate-900 flex flex-col items-center justify-center font-sans px-4 text-center">
+        <div className="bg-slate-800/50 p-8 rounded-3xl border border-slate-700/50 shadow-2xl max-w-md w-full flex flex-col items-center space-y-6">
+          <div className="p-4 bg-blue-500/10 rounded-2xl">
+            <RefreshCw className="w-8 h-8 text-blue-400 animate-spin" />
+          </div>
+          <div className="space-y-2">
+            <h2 className="text-xl font-bold text-white tracking-tight">Installing Update</h2>
+            <p className="text-sm text-slate-400 leading-relaxed font-normal">
+              Transport LogIQ is automatically updating to the newest version to keep your operational data perfectly in sync. This will take just a second.
+            </p>
+          </div>
+          <div className="w-full bg-slate-700 h-1.5 rounded-full overflow-hidden">
+            <div className="bg-blue-500 h-full w-2/3 rounded-full animate-pulse" />
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   if (!user) {
     return <Login />;
   }
@@ -426,47 +656,6 @@ export default function App() {
   return (
     <APIProvider apiKey={GOOGLE_MAPS_API_KEY} version="weekly">
       <div className="flex flex-col h-screen overflow-hidden">
-        {updateAvailable && (
-          <div className="bg-blue-600 text-white px-4 py-3 flex items-center justify-between shadow-md z-50 rounded-b-lg m-2 fixed top-0 left-0 right-0 max-w-2xl mx-auto">
-            <div className="flex items-center gap-2">
-              <RefreshCw className="w-5 h-5 flex-shrink-0" />
-              <span className="font-medium text-sm">A new version of LOD Core is available.</span>
-            </div>
-            <button 
-              onClick={async () => {
-                const reloadTimeout = new Promise((resolve) => setTimeout(resolve, 300));
-                try {
-                  await Promise.race([
-                    (async () => {
-                      if ('caches' in window) {
-                         const keys = await caches.keys();
-                         await Promise.all(keys.map(k => caches.delete(k)));
-                      }
-                      if ('serviceWorker' in navigator) {
-                         const regs = await navigator.serviceWorker.getRegistrations();
-                         for (const reg of regs) {
-                           try {
-                             await reg.unregister();
-                           } catch (e) {
-                             console.warn("SW unregister error:", e);
-                           }
-                         }
-                      }
-                    })(),
-                    reloadTimeout
-                  ]);
-                } catch (err) {
-                  console.error("Clean up on update failed:", err);
-                } finally {
-                  window.location.reload();
-                }
-              }} 
-              className="bg-white/20 hover:bg-white/30 px-3 py-1.5 rounded-full text-xs font-bold uppercase tracking-wider transition-colors"
-            >
-              Update Now
-            </button>
-          </div>
-        )}
         <div className="flex flex-1 w-full bg-[#f8fafc] font-sans overflow-hidden text-slate-900 border-t border-transparent relative">
           {/* Mobile Overlay */}
           {isMobileMenuOpen && (
@@ -481,7 +670,7 @@ export default function App() {
           <div className="p-6 md:p-8 flex items-center justify-between">
             <h1 className="text-blue-600 font-bold text-xl flex items-center gap-2">
               <PickupTrailerIcon className="w-12 h-7 shrink-0 text-blue-600" />
-              <span>Transport Genius</span>
+              <span>Transport LogIQ</span>
             </h1>
             <button 
               className="md:hidden p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg"
@@ -505,7 +694,7 @@ export default function App() {
                 className={`px-4 py-3 cursor-pointer text-sm font-medium rounded-xl flex items-center gap-3 transition-colors ${view === 'history' && activeFolderFilter === null ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-50'}`}
               >
                 <History className="w-4 h-4" />
-                Unit History
+                {operatorType === 'Hot Shot' ? 'Load History' : 'Unit History'}
               </li>
               
               {/* Folders expandable/collapsible sub-menu header */}
@@ -517,43 +706,124 @@ export default function App() {
                   <Folder className="w-3.5 h-3.5 text-slate-450" />
                   Folders {allHistoryFolders.length > 0 ? `(${allHistoryFolders.length})` : ''}
                 </span>
-                {isFoldersExpanded ? (
-                  <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
-                ) : (
-                  <ChevronRight className="w-3.5 h-3.5 text-slate-400" />
-                )}
+                <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsFoldersExpanded(true);
+                      setIsAddingFolderSidebar(true);
+                    }}
+                    className="p-1 text-slate-450 hover:text-blue-600 hover:bg-slate-100 rounded transition-colors"
+                    title="Add new folder"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                  </button>
+                  {isFoldersExpanded ? (
+                    <ChevronDown className="w-3.5 h-3.5 text-slate-400" onClick={() => setIsFoldersExpanded(false)} />
+                  ) : (
+                    <ChevronRight className="w-3.5 h-3.5 text-slate-400" onClick={() => setIsFoldersExpanded(true)} />
+                  )}
+                </div>
               </div>
 
               {isFoldersExpanded && (
                 <div className="pl-6 pr-2 py-1 space-y-1 max-h-48 overflow-y-auto">
+                  {isAddingFolderSidebar && (
+                    <div className="px-2 py-1.5 bg-slate-50 border border-blue-100 rounded-lg flex items-center gap-1.5 mb-2">
+                      <input
+                        type="text"
+                        autoFocus
+                        value={newFolderSidebarName}
+                        onChange={(e) => setNewFolderSidebarName(e.target.value)}
+                        placeholder="New folder..."
+                        className="w-full bg-transparent text-[11px] font-semibold text-slate-800 outline-none placeholder:text-slate-400"
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            const trimmed = newFolderSidebarName.trim();
+                            if (trimmed) {
+                              if (!allHistoryFolders.includes(trimmed)) {
+                                saveCustomFoldersInApp([...allHistoryFolders, trimmed], true);
+                              }
+                              setNewFolderSidebarName('');
+                              setIsAddingFolderSidebar(false);
+                            }
+                          } else if (e.key === 'Escape') {
+                            setNewFolderSidebarName('');
+                            setIsAddingFolderSidebar(false);
+                          }
+                        }}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const trimmed = newFolderSidebarName.trim();
+                          if (trimmed) {
+                            if (!allHistoryFolders.includes(trimmed)) {
+                              saveCustomFoldersInApp([...allHistoryFolders, trimmed], true);
+                            }
+                            setNewFolderSidebarName('');
+                            setIsAddingFolderSidebar(false);
+                          }
+                        }}
+                        className="p-0.5 hover:bg-blue-100 text-blue-600 rounded"
+                      >
+                        <Plus className="w-3 h-3" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setNewFolderSidebarName('');
+                          setIsAddingFolderSidebar(false);
+                        }}
+                        className="p-0.5 hover:bg-slate-200 text-slate-400 rounded"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </div>
+                  )}
                   {allHistoryFolders.length > 0 ? (
                     allHistoryFolders.map((folder, index) => {
                       const isSelected = view === 'history' && activeFolderFilter === folder;
                       const isDragged = draggedFolderIndex === index;
                       const isOver = draggedOverFolderIndex === index;
                       return (
-                        <div 
+                        <motion.div 
+                          layout
                           key={folder}
+                          data-folder-index={index}
                           draggable
                           onDragStart={(e) => handleDragStart(index, e)}
                           onDragOver={(e) => handleDragOver(index, e)}
                           onDragEnd={handleDragEnd}
                           onDrop={(e) => handleDrop(index, e)}
+                          onTouchStart={(e) => handleTouchStart(index, e)}
+                          onTouchMove={(e) => handleTouchMove(index, e)}
+                          onTouchEnd={handleTouchEnd}
                           onClick={() => {
                             setView('history');
                             setActiveFolderFilter(folder);
                             setIsMobileMenuOpen(false);
                           }}
-                          className={`group px-3 py-1.5 cursor-pointer text-xs font-medium rounded-lg flex items-center gap-1.5 transition-all select-none border border-transparent ${
+                          transition={{ type: "spring", stiffness: 500, damping: 35 }}
+                          className={`group relative px-3 py-1.5 cursor-pointer text-xs font-medium rounded-lg flex items-center gap-1.5 transition-all select-none border ${
                             isSelected 
-                              ? 'bg-blue-50/70 text-blue-700 font-bold' 
-                              : 'text-slate-500 hover:text-slate-800 hover:bg-slate-50'
-                          } ${isDragged ? 'opacity-40 border-dashed border-blue-300' : ''} ${
-                            isOver ? 'border-dashed border-blue-400 bg-blue-50/30' : ''
+                              ? 'bg-blue-50/70 text-blue-700 font-bold border-blue-100' 
+                              : 'text-slate-500 hover:text-slate-800 hover:bg-slate-50 border-transparent'
+                          } ${isDragged ? 'opacity-30 bg-slate-100/50 scale-95 border-dashed border-slate-300' : ''} ${
+                            isOver ? 'scale-[1.02] bg-blue-50/80 shadow-sm border-blue-400 text-blue-900 border-dashed z-10' : ''
                           }`}
                         >
+                          {/* Drag Insertion Guide Line */}
+                          {isOver && draggedFolderIndex !== null && (
+                            <div 
+                              className={`absolute left-0 right-0 h-0.5 bg-blue-500 rounded-full z-20 ${
+                                index > draggedFolderIndex ? '-bottom-1' : '-top-1'
+                              }`}
+                              style={{ boxShadow: '0 0 8px #3b82f6' }}
+                            />
+                          )}
                           <div 
-                            className="cursor-grab active:cursor-grabbing p-0.5 -ml-1.5 flex items-center justify-center rounded hover:bg-slate-200 transition-colors"
+                            className="cursor-grab active:cursor-grabbing p-0.5 -ml-1.5 flex items-center justify-center rounded hover:bg-slate-200 transition-colors touch-none"
                             onClick={(e) => e.stopPropagation()} // Prevent triggering filter click
                             title="Drag to reorder"
                           >
@@ -566,6 +836,34 @@ export default function App() {
                           
                           <span className="truncate flex-1">{folder}</span>
 
+                          {/* Up/Down buttons for mobile & failsafe cross-platform reordering */}
+                          <div className="opacity-0 group-hover:opacity-100 flex items-center shrink-0 gap-0.5">
+                            <button
+                              type="button"
+                              disabled={index === 0}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleMoveFolder(index, -1);
+                              }}
+                              className="p-0.5 hover:bg-slate-100 disabled:opacity-25 text-slate-400 hover:text-slate-600 rounded transition-colors"
+                              title="Move up"
+                            >
+                              <ChevronUp className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              disabled={index === allHistoryFolders.length - 1}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleMoveFolder(index, 1);
+                              }}
+                              className="p-0.5 hover:bg-slate-100 disabled:opacity-25 text-slate-400 hover:text-slate-600 rounded transition-colors"
+                              title="Move down"
+                            >
+                              <ChevronDown className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+
                           <button
                             type="button"
                             onClick={(e) => {
@@ -577,7 +875,7 @@ export default function App() {
                           >
                             <Trash2 className="w-3.5 h-3.5" />
                           </button>
-                        </div>
+                        </motion.div>
                       );
                     })
                   ) : (
@@ -655,7 +953,7 @@ export default function App() {
               
               <div className="flex flex-col">
                 <h2 className="text-slate-900 font-bold text-lg leading-tight capitalize">
-                  {view === 'dashboard' ? 'Overview' : view === 'history' ? 'Unit History' : view === 'settings' ? 'Settings' : 'Administration'}
+                  {view === 'dashboard' ? 'Overview' : view === 'history' ? (operatorType === 'Hot Shot' ? 'Load History' : 'Unit History') : view === 'settings' ? 'Settings' : 'Administration'}
                 </h2>
                 <p className="hidden md:block text-slate-400 text-xs">Welcome back to your workspace</p>
               </div>
@@ -670,7 +968,7 @@ export default function App() {
                 onClick={startNewHaul}
                 className="bg-blue-600 text-white px-4 md:px-5 py-2.5 rounded-full text-sm font-semibold hover:bg-blue-700 transition-all shadow-sm hover:shadow-md flex items-center gap-2"
               >
-                <Plus className="w-4 h-4" /> <span>New Unit</span>
+                <Plus className="w-4 h-4" /> <span>{operatorType === 'Hot Shot' ? 'New Load' : 'New Unit'}</span>
               </button>
               {existingActiveHaul && (
                 <button 
@@ -678,7 +976,7 @@ export default function App() {
                   className="bg-slate-900 text-white px-4 md:px-5 py-2.5 rounded-full text-sm font-semibold hover:bg-slate-800 transition-all flex items-center gap-2"
                 >
                   <ExternalLink className="w-4 h-4" /> 
-                  <span className="inline">Open Current Unit</span>
+                  <span className="inline">{operatorType === 'Hot Shot' ? 'Open Current Load' : 'Open Current Unit'}</span>
                 </button>
               )}
             </div>
@@ -759,7 +1057,7 @@ export default function App() {
                   exit={{ opacity: 0, y: -10 }}
                 >
                   <div className="mb-8">
-                    <h3 className="text-lg font-semibold text-slate-900 mb-1">Unit History</h3>
+                    <h3 className="text-lg font-semibold text-slate-900 mb-1">{operatorType === 'Hot Shot' ? 'Load History' : 'Unit History'}</h3>
                     <p className="text-slate-500 text-sm">Review and manage your past deliveries</p>
                   </div>
                   <HistoricalTable 
@@ -807,6 +1105,7 @@ export default function App() {
               onClose={() => setActiveHaulId(null)} 
               customFolders={customFolders}
               onUpdateFolders={(folders) => saveCustomFoldersInApp(folders, true)}
+              operatorType={operatorType}
             />
           )}
         </AnimatePresence>
@@ -856,9 +1155,285 @@ export default function App() {
           )}
         </AnimatePresence>
         
-        {displayVersion && (
-          <div className="fixed bottom-2 right-4 text-xs font-medium text-slate-400 z-50 pointer-events-none opacity-70">
-            {displayVersion}
+        <AnimatePresence>
+          {showUpdatePopup && (
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-[10000] flex items-center justify-center p-4"
+              onClick={dismissUpdate}
+            >
+              <motion.div 
+                initial={{ scale: 0.95, y: 10 }}
+                animate={{ scale: 1, y: 0 }}
+                exit={{ scale: 0.95, y: 10 }}
+                className="bg-white rounded-3xl p-6 md:p-8 max-w-lg w-full border border-slate-100 shadow-2xl overflow-hidden"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="flex items-start justify-between gap-4 mb-5">
+                  <div className="flex items-center gap-3">
+                    <div className="p-3 bg-blue-50 text-blue-600 rounded-2xl">
+                      <RefreshCw className="w-6 h-6 animate-spin" style={{ animationDuration: '3s' }} />
+                    </div>
+                    <div>
+                      <h3 className="text-xl font-bold text-slate-900">Software Update Available</h3>
+                      <p className="text-xs font-semibold text-blue-600 mt-0.5">Version {latestServerVersion || 'v1.5.56'}</p>
+                    </div>
+                  </div>
+                  <button 
+                    onClick={dismissUpdate}
+                    className="p-1.5 hover:bg-slate-50 text-slate-400 hover:text-slate-600 rounded-lg transition-colors"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+
+                <div className="space-y-4 mb-6">
+                  <p className="text-sm text-slate-500 leading-relaxed">
+                    A new update is ready for Transport LogIQ! Here is a summary of what's new and improved in this build:
+                  </p>
+                  
+                  <div className="bg-slate-50 rounded-2xl p-4 border border-slate-100/60 max-h-[220px] overflow-y-auto space-y-3 scrollbar-thin">
+                    <div className="flex gap-2.5 items-start">
+                      <span className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1.5 flex-shrink-0" />
+                      <div>
+                        <p className="text-xs font-bold text-slate-800">Precise Aerodynamic Drag</p>
+                        <p className="text-xs text-slate-500 leading-relaxed mt-0.5">MPG calculations now adjust according to the selected Towable Unit Type (Travel Trailer, Fifth Wheel, GN Fifth Wheel, Park Model, Cargo Trailer) to reflect true wind-resistance profiles.</p>
+                      </div>
+                    </div>
+                    
+                    <div className="flex gap-2.5 items-start">
+                      <span className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1.5 flex-shrink-0" />
+                      <div>
+                        <p className="text-xs font-bold text-slate-800">Dynamic Trailer Length Penalty</p>
+                        <p className="text-xs text-slate-500 leading-relaxed mt-0.5">Expected MPG calculations now account for skin-friction and lateral wind resistance on longer trailers (0.03 MPG per foot above 20 feet).</p>
+                      </div>
+                    </div>
+
+                    <div className="flex gap-2.5 items-start">
+                      <span className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1.5 flex-shrink-0" />
+                      <div>
+                        <p className="text-xs font-bold text-slate-800">Multi-Axle Rolling Resistance</p>
+                        <p className="text-xs text-slate-500 leading-relaxed mt-0.5">Supports 1, 2, or 3-axle configurations to refine tire-to-road friction and drag predictions.</p>
+                      </div>
+                    </div>
+
+                    <div className="flex gap-2.5 items-start">
+                      <span className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1.5 flex-shrink-0" />
+                      <div>
+                        <p className="text-xs font-bold text-slate-800">Operational Unit Specifications</p>
+                        <p className="text-xs text-slate-500 leading-relaxed mt-0.5">Easily define your Unit Type via select menu and input exact Unit Length in feet directly in the Trip Workspace form.</p>
+                      </div>
+                    </div>
+
+                    <div className="flex gap-2.5 items-start">
+                      <span className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1.5 flex-shrink-0" />
+                      <div>
+                        <p className="text-xs font-bold text-slate-800">Sidebar Folder Management</p>
+                        <p className="text-xs text-slate-500 leading-relaxed mt-0.5">Add, manage, and delete workflow folders directly from the main sidebar for instant organization.</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex gap-3">
+                  <button 
+                    type="button"
+                    onClick={dismissUpdate}
+                    disabled={isAutoUpdating}
+                    className="flex-1 py-3 px-4 border border-slate-200 rounded-xl text-sm font-semibold text-slate-600 hover:bg-slate-50 active:scale-[0.98] transition-all disabled:opacity-50"
+                  >
+                    Later
+                  </button>
+                  <button 
+                    type="button"
+                    onClick={triggerAppUpdate}
+                    disabled={isAutoUpdating}
+                    className="flex-1 py-3 px-4 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-sm font-semibold active:scale-[0.98] transition-all shadow-sm shadow-blue-100 flex items-center justify-center gap-2 disabled:opacity-50"
+                  >
+                    {isAutoUpdating ? (
+                      <>
+                        <RefreshCw className="w-4 h-4 animate-spin" />
+                        Updating...
+                      </>
+                    ) : (
+                      'Update & Restart'
+                    )}
+                  </button>
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        <AnimatePresence>
+          {justUpdated && !showUpdatePopup && (
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-[10000] flex items-center justify-center p-4"
+              onClick={acknowledgeJustUpdated}
+            >
+              <motion.div 
+                initial={{ scale: 0.95, y: 10 }}
+                animate={{ scale: 1, y: 0 }}
+                exit={{ scale: 0.95, y: 10 }}
+                className="bg-white rounded-3xl p-6 md:p-8 max-w-lg w-full border border-slate-100 shadow-2xl overflow-hidden"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="flex items-start justify-between gap-4 mb-5">
+                  <div className="flex items-center gap-3">
+                    <div className="p-3 bg-emerald-50 text-emerald-600 rounded-2xl">
+                      <CheckCircle2 className="w-6 h-6 animate-bounce" style={{ animationDuration: '2s' }} />
+                    </div>
+                    <div>
+                      <h3 className="text-xl font-bold text-slate-900">Software Successfully Updated!</h3>
+                      <p className="text-xs font-semibold text-emerald-600 mt-0.5">Version {currentVersion || 'v1.5.56'} is now active</p>
+                    </div>
+                  </div>
+                  <button 
+                    onClick={acknowledgeJustUpdated}
+                    className="p-1.5 hover:bg-slate-50 text-slate-400 hover:text-slate-600 rounded-lg transition-colors"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+
+                <div className="space-y-4 mb-6">
+                  <p className="text-sm text-slate-500 leading-relaxed">
+                    Transport LogIQ has been updated! Here is the list of new features and improvements available in this build:
+                  </p>
+                  
+                  <div className="bg-slate-50 rounded-2xl p-4 border border-slate-100/60 max-h-[280px] overflow-y-auto space-y-3 scrollbar-thin">
+                    {getUpdatesSince(lastSeenVersion, currentVersion || '1.5.77').map((update: AppUpdate, idx: number) => (
+                      <div key={idx} className="flex gap-2.5 items-start">
+                        <span className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1.5 flex-shrink-0" />
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <p className="text-xs font-bold text-slate-800">{update.title}</p>
+                            <span className="px-1.5 py-0.5 bg-slate-200/80 text-[9px] font-bold text-slate-500 rounded-md">v{update.version}</span>
+                          </div>
+                          <p className="text-xs text-slate-500 leading-relaxed mt-0.5">{update.description}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="flex gap-3">
+                  <button 
+                    type="button"
+                    onClick={acknowledgeJustUpdated}
+                    className="w-full py-3 px-4 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-sm font-semibold active:scale-[0.98] transition-all shadow-sm shadow-blue-100 flex items-center justify-center gap-2"
+                  >
+                    Awesome, Let's Go!
+                  </button>
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* FIRST-TIME REGISTRATION OPERATOR SELECTION POPUP */}
+        <AnimatePresence>
+          {showOperatorPopup && user && (
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 bg-slate-900/60 backdrop-blur-md z-50 flex items-center justify-center p-4 shadow-xl animate-none"
+            >
+              <motion.div 
+                initial={{ scale: 0.95, y: 15 }}
+                animate={{ scale: 1, y: 0 }}
+                exit={{ scale: 0.95, y: 15 }}
+                className="bg-white rounded-3xl p-6 md:p-8 max-w-lg w-full border border-slate-100 shadow-2xl flex flex-col"
+              >
+                <div className="flex items-center gap-3 mb-5">
+                  <div className="p-2.5 bg-blue-50 text-blue-600 rounded-2xl">
+                    <Truck className="w-6 h-6" />
+                  </div>
+                  <div>
+                    <h3 className="text-lg font-black text-slate-900">Welcome to Transport LogIQ</h3>
+                    <p className="text-xs text-slate-400">Please select your primary workspace classification</p>
+                  </div>
+                </div>
+
+                <p className="text-xs text-slate-500 mb-6 leading-relaxed">
+                  To calibrate your performance metrics, target MPGs, and coordinate the entry fields of your dispatch trips, tell us how you operate:
+                </p>
+
+                <div className="space-y-3.5 mb-2">
+                  {/* Option 1: RV Tow Away */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const userRef = doc(db, 'users', user.uid);
+                      setDoc(userRef, { operatorType: 'RV Tow Away' }, { merge: true }).catch(() => {});
+                      setOperatorType('RV Tow Away');
+                      setShowOperatorPopup(false);
+                    }}
+                    className="w-full text-left p-4 rounded-2xl border border-slate-100 hover:border-blue-200 hover:bg-slate-50/80 transition-all flex items-start gap-3.5 group"
+                  >
+                    <span className="w-5 h-5 rounded-full border border-slate-200 flex items-center justify-center text-xs shrink-0 mt-0.5 group-hover:border-blue-500 group-hover:bg-blue-50">
+                      <span className="w-2.5 h-2.5 rounded-full bg-transparent group-hover:bg-blue-500" />
+                    </span>
+                    <div>
+                      <p className="text-xs font-black text-slate-800">RV Tow Away Operator</p>
+                      <p className="text-[11px] text-slate-400 leading-relaxed mt-0.5">Optimized for single RV towing setups (travel trailers or fifth wheels). Standard logistics form tracking.</p>
+                    </div>
+                  </button>
+
+                  {/* Option 2: RV Multi Haul */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const userRef = doc(db, 'users', user.uid);
+                      setDoc(userRef, { operatorType: 'RV Multi Haul' }, { merge: true }).catch(() => {});
+                      setOperatorType('RV Multi Haul');
+                      setShowOperatorPopup(false);
+                    }}
+                    className="w-full text-left p-4 rounded-2xl border border-slate-100 hover:border-blue-200 hover:bg-slate-50/80 transition-all flex items-start gap-3.5 group"
+                  >
+                    <span className="w-5 h-5 rounded-full border border-slate-200 flex items-center justify-center text-xs shrink-0 mt-0.5 group-hover:border-blue-500 group-hover:bg-blue-50">
+                      <span className="w-2.5 h-2.5 rounded-full bg-transparent group-hover:bg-blue-500" />
+                    </span>
+                    <div>
+                      <p className="text-xs font-black text-slate-800">RV Multi Haul Operator</p>
+                      <p className="text-[11px] text-slate-400 leading-relaxed mt-0.5">Optimized for multi-unit transport. Adds split inputs for up to 3 Unit Numbers, Lengths, GVWRs, and Dry Weights simultaneously.</p>
+                    </div>
+                  </button>
+
+                  {/* Option 3: Hot Shot */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const userRef = doc(db, 'users', user.uid);
+                      setDoc(userRef, { operatorType: 'Hot Shot' }, { merge: true }).catch(() => {});
+                      setOperatorType('Hot Shot');
+                      setShowOperatorPopup(false);
+                    }}
+                    className="w-full text-left p-4 rounded-2xl border border-slate-100 hover:border-blue-200 hover:bg-slate-50/80 transition-all flex items-start gap-3.5 group"
+                  >
+                    <span className="w-5 h-5 rounded-full border border-slate-200 flex items-center justify-center text-xs shrink-0 mt-0.5 group-hover:border-blue-500 group-hover:bg-blue-50">
+                      <span className="w-2.5 h-2.5 rounded-full bg-transparent group-hover:bg-blue-500" />
+                    </span>
+                    <div>
+                      <p className="text-xs font-black text-slate-800">Hot Shot Operator</p>
+                      <p className="text-[11px] text-slate-400 leading-relaxed mt-0.5">Optimized for LTL freight/flatbed. Replaces "Unit Number" with "BOL Number", "GVWR" with "Load Weight", and streamlines dry weight requirements.</p>
+                    </div>
+                  </button>
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {currentVersion && (
+          <div className="fixed bottom-2 right-4 text-[10px] font-bold text-slate-400 z-50 pointer-events-none opacity-60">
+            {currentVersion}
           </div>
         )}
       </div>

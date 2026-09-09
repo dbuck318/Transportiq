@@ -27,6 +27,23 @@ export interface Haul {
   notes?: string;
   createdAt: any;
   updatedAt: any;
+  axles?: number;
+  unitLength?: number;
+  
+  // New Operator Specific Fields
+  operatorType?: 'RV Tow Away' | 'RV Multi Haul' | 'Hot Shot';
+  unitNumber1?: string;
+  unitNumber2?: string;
+  unitNumber3?: string;
+  unitLength1?: number;
+  unitLength2?: number;
+  unitLength3?: number;
+  grossWeight1?: number;
+  grossWeight2?: number;
+  grossWeight3?: number;
+  scaleWeight1?: number;
+  scaleWeight2?: number;
+  scaleWeight3?: number;
 }
 
 export interface Expense {
@@ -82,6 +99,17 @@ export interface UserProfile {
   duallyOrSrw?: 'DRW' | 'SRW';
   drivetrain?: '4x4' | '2WD';
   powerUnitScaleWeight?: number | string;
+  powerUnitWheelbase?: 'LWB' | 'SWB';
   otherVehicleNotes?: string;
+  
+  // Custom Operator Preferences
+  operatorType?: 'RV Tow Away' | 'RV Multi Haul' | 'Hot Shot';
+  tireMake?: string;
+  tireType?: string;
+  tireSize?: string;
+  trailerMake?: string;
+  trailerModel?: string;
+  trailerLength?: number | string;
+  trailerWeight?: number | string;
 }
 
