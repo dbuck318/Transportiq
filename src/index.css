@@ -17,6 +17,18 @@
     @apply bg-brand-bg text-slate-900;
   }
 
+  /* Hide the Chrome/Safari/Edge/Opera spin buttons */
+  input::-webkit-outer-spin-button,
+  input::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+
+  /* Hide Firefox spin buttons */
+  input[type=number] {
+    -moz-appearance: textfield;
+  }
+
   /* Ensure Google Maps Autocomplete results appear above the active workspace modal (z-50) */
   .pac-container {
     z-index: 10000 !important;
