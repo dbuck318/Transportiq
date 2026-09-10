@@ -28,7 +28,11 @@ export function calculateTotals(
   const rate = Number(haul.ratePerMile || 0);
   const scaleWt = parseCleanWeight(haul.scaleWeight);
 
-  const grossRevenue = Number((loadedMiles * rate).toFixed(2));
+  const effectiveLoadedMiles = loadedMiles > 0 ? loadedMiles : miles;
+  let grossRevenue = Number((effectiveLoadedMiles * rate).toFixed(2));
+  if (grossRevenue === 0 && Number(haul.grossRevenue || 0) > 0) {
+    grossRevenue = Number(haul.grossRevenue);
+  }
 
   const dbOperatingCosts = expenses.reduce((sum, exp) => sum + Number(exp.amount || 0), 0);
   

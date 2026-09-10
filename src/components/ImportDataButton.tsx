@@ -61,7 +61,17 @@ export default function ImportDataButton({ ownerId }: Props) {
                totalMiles = loadedMiles + deadheadMiles;
              }
 
+             let finalLoadedMiles = loadedMiles;
+             if (finalLoadedMiles === 0 && totalMiles > 0) {
+               finalLoadedMiles = Math.max(0, totalMiles - deadheadMiles);
+             }
+
              const grossRevenue = parseNumber(haul.grossRevenue ?? haul.revenue ?? haul.gross);
+             let ratePerMileVal = parseNumber(haul.ratePerMile);
+             if (ratePerMileVal === 0 && grossRevenue > 0 && finalLoadedMiles > 0) {
+               ratePerMileVal = Number((grossRevenue / finalLoadedMiles).toFixed(4));
+             }
+
              let totalOperatingCosts = parseNumber(haul.totalOperatingCosts ?? haul.expenses ?? haul.totalExpenses ?? haul.operatingCosts ?? haul.costs);
              let netProfit = parseNumber(haul.netProfit ?? haul.profit ?? haul.net);
 
@@ -114,13 +124,13 @@ export default function ImportDataButton({ ownerId }: Props) {
                 milesPerGallon: milesPerGallon,
                 loadedMpg: loadedMpg,
                 deadheadMpg: deadheadMpg,
-                loadedMiles: loadedMiles,
+                loadedMiles: finalLoadedMiles,
                 deadheadMiles: deadheadMiles,
                 pickUpLocation: String(pickUpLocationVal).trim(),
                 deliveryDate: formatForInput(deliveryDateVal),
                 deliveryLocation: String(deliveryLocationVal).trim(),
                 totalMiles: totalMiles,
-                ratePerMile: parseNumber(haul.ratePerMile),
+                ratePerMile: ratePerMileVal,
                 scaleWeight: parseNumber(haul.scaleWeight),
                 grossWeight: parseNumber(haul.grossWeight),
                 grossRevenue: grossRevenue,

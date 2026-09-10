@@ -126,7 +126,7 @@ export default function App() {
     }
   }, [view]);
 
-  const [timeRange, setTimeRange] = useState<'7d' | '30d' | '2m' | '3m' | '1y' | 'all'>('7d');
+  const [timeRange, setTimeRange] = useState<'7d' | '14d' | '30d' | '3m' | '6m' | '1y' | 'all'>('7d');
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
@@ -370,7 +370,6 @@ export default function App() {
   };
 
   const SUPER_ADMIN_EMAILS = [
-    atob('ZGF2aWQuYS5idWNrbGV5NzFAZ21haWwuY29t'), // david.a.buckley71@gmail.com
     'support@transportiq.com'
   ];
 
@@ -1013,9 +1012,10 @@ export default function App() {
                             className="px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-medium text-slate-700 outline-none focus:border-blue-500"
                           >
                             <option value="7d">Last 7 Days</option>
+                            <option value="14d">Last 14 Days</option>
                             <option value="30d">Last 30 Days</option>
-                            <option value="2m">Last 2 Months</option>
                             <option value="3m">Last 3 Months</option>
+                            <option value="6m">Last 6 Months</option>
                             <option value="1y">Last Year</option>
                             <option value="all">All Time</option>
                           </select>

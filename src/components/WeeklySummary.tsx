@@ -9,7 +9,7 @@ import { collection, query, where, getDocs } from 'firebase/firestore';
 interface Props {
   hauls: Haul[];
   compact?: boolean;
-  timeRange?: '7d' | '30d' | '2m' | '3m' | '1y' | 'all';
+  timeRange?: '7d' | '14d' | '30d' | '3m' | '6m' | '1y' | 'all';
   ownerId?: string;
 }
 
@@ -33,9 +33,10 @@ export default function WeeklySummary({ hauls = [], compact, timeRange = '7d', o
     d.setHours(0, 0, 0, 0);
     switch (timeRange) {
       case '7d': d.setDate(d.getDate() - 6); break;
+      case '14d': d.setDate(d.getDate() - 13); break;
       case '30d': d.setDate(d.getDate() - 29); break;
-      case '2m': d.setMonth(d.getMonth() - 2); break;
       case '3m': d.setMonth(d.getMonth() - 3); break;
+      case '6m': d.setMonth(d.getMonth() - 6); break;
       case '1y': d.setFullYear(d.getFullYear() - 1); break;
       case 'all': return new Date(0);
     }
@@ -50,14 +51,23 @@ export default function WeeklySummary({ hauls = [], compact, timeRange = '7d', o
 
   const filteredHauls = (hauls || []).filter(h => {
     // Filter out empty/blank hauls (drafts or invalid entries that lack identifying info and metrics)
-    const hasNoInfo = (!h.unitNumber || h.unitNumber.trim() === '') &&
-                      (!h.loadNumber || h.loadNumber.trim() === '') &&
-                      (!h.customerName || h.customerName.trim() === '') &&
-                      (Number(h.grossRevenue || 0) === 0) &&
-                      (Number(h.totalMiles || 0) === 0) &&
-                      (Number(h.loadedMiles || 0) === 0);
-    
-    if (hasNoInfo) return false;
+    const hasIdentifier = 
+      (h.unitNumber && String(h.unitNumber).trim() !== '') ||
+      (h.unitNumber1 && String(h.unitNumber1).trim() !== '') ||
+      (h.unitNumber2 && String(h.unitNumber2).trim() !== '') ||
+      (h.unitNumber3 && String(h.unitNumber3).trim() !== '') ||
+      (h.loadNumber && String(h.loadNumber).trim() !== '') ||
+      (h.customerName && String(h.customerName).trim() !== '');
+
+    const hasMetrics = 
+      Number(h.grossRevenue || 0) !== 0 ||
+      Number(h.totalMiles || 0) !== 0 ||
+      Number(h.loadedMiles || 0) !== 0 ||
+      (h.pickUpLocation && String(h.pickUpLocation).trim() !== '') ||
+      (h.deliveryLocation && String(h.deliveryLocation).trim() !== '');
+
+    const hasInfo = !!(hasIdentifier || hasMetrics || h.pickUpDate || h.deliveryDate);
+    if (!hasInfo) return false;
 
     const rawDate = safeParseDate(h.deliveryDate) || safeParseDate(h.pickUpDate);
     
@@ -125,9 +135,10 @@ export default function WeeklySummary({ hauls = [], compact, timeRange = '7d', o
 
   const timeRangeLabels = {
     '7d': '7-Day',
+    '14d': '14-Day',
     '30d': '30-Day',
-    '2m': '2-Month',
     '3m': '3-Month',
+    '6m': '6-Month',
     '1y': '1-Year',
     'all': 'All-Time'
   };

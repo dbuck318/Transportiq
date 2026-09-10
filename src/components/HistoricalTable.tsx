@@ -10,6 +10,7 @@ import { db } from '../lib/firebase';
 
 import ImportDataButton from './ImportDataButton';
 import { parseCleanWeight } from '../lib/calculations';
+import { safeParseDate } from '../lib/dateUtils';
 
 function calculateGenericIndustryMpg(h: any) {
   // Base towing average: 9.0 base default
@@ -85,7 +86,7 @@ export default function HistoricalTable({
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [showBulkDeleteModal, setShowBulkDeleteModal] = useState(false);
 
-  const [activeTab, setActiveTab] = useState<'Active' | 'Completed'>('Active');
+  const [activeTab, setActiveTab] = useState<'Active' | 'Completed'>('Completed');
   const [showFolderModal, setShowFolderModal] = useState(false);
   const [folderNameInput, setFolderNameInput] = useState('');
 
@@ -98,21 +99,56 @@ export default function HistoricalTable({
     }
   };
 
+  const getHasInfo = (h: Haul) => {
+    const hasIdentifier = 
+      (h.unitNumber && String(h.unitNumber).trim() !== '') ||
+      (h.unitNumber1 && String(h.unitNumber1).trim() !== '') ||
+      (h.unitNumber2 && String(h.unitNumber2).trim() !== '') ||
+      (h.unitNumber3 && String(h.unitNumber3).trim() !== '') ||
+      (h.loadNumber && String(h.loadNumber).trim() !== '') ||
+      (h.customerName && String(h.customerName).trim() !== '');
+
+    const hasMetrics = 
+      Number(h.grossRevenue || 0) !== 0 ||
+      Number(h.totalMiles || 0) !== 0 ||
+      Number(h.loadedMiles || 0) !== 0 ||
+      (h.pickUpLocation && String(h.pickUpLocation).trim() !== '') ||
+      (h.deliveryLocation && String(h.deliveryLocation).trim() !== '');
+
+    // A haul has information if it has either any identifier OR any metrics/dates filled in
+    return !!(hasIdentifier || hasMetrics || h.pickUpDate || h.deliveryDate);
+  };
+
+  const activeCount = (hauls || []).filter(h => getHasInfo(h) && h.status === 'Active').length;
+  const completedCount = (hauls || []).filter(h => getHasInfo(h) && (h.status === 'Completed' || h.status === 'Finalized')).length;
+
   const visibleHauls = (() => {
-    const filtered = (hauls || []).filter(h => 
-      (activeTab === 'Active' ? h.status === 'Active' : (h.status === 'Completed' || h.status === 'Finalized')) && 
-      (!activeFolderFilter || h.folder === activeFolderFilter)
-    );
+    const filtered = (hauls || []).filter(h => {
+      if (!getHasInfo(h)) return false;
+
+      return (activeTab === 'Active' ? h.status === 'Active' : (h.status === 'Completed' || h.status === 'Finalized')) && 
+        (!activeFolderFilter || h.folder === activeFolderFilter);
+    });
     if (activeTab === 'Completed') {
       return [...filtered].sort((a, b) => {
-        const dateA = a.deliveryDate || '';
-        const dateB = b.deliveryDate || '';
-        return dateB.localeCompare(dateA);
+        const parsedA = safeParseDate(a.deliveryDate || a.pickUpDate);
+        const parsedB = safeParseDate(b.deliveryDate || b.pickUpDate);
+        if (!parsedA && !parsedB) return 0;
+        if (!parsedA) return 1; // Put invalid dates at the bottom
+        if (!parsedB) return -1;
+        return parsedB.getTime() - parsedA.getTime();
       });
     }
     return filtered;
   })();
-  const uniqueFolders = Array.from(new Set((hauls || []).filter(h => (activeTab === 'Active' ? h.status === 'Active' : (h.status === 'Completed' || h.status === 'Finalized')) && h.folder).map(h => h.folder!)));
+  const uniqueFolders = Array.from(new Set(
+    (hauls || [])
+      .filter(h => {
+        if (!getHasInfo(h)) return false;
+        return (activeTab === 'Active' ? h.status === 'Active' : (h.status === 'Completed' || h.status === 'Finalized')) && h.folder;
+      })
+      .map(h => h.folder!)
+  ));
   const allFolders = Array.from(new Set([...uniqueFolders, ...customFolders]));
 
   // Auto-clear stale selected IDs when they disappear from the visible hauls list (e.g., when opened/edited or deleted)
@@ -511,17 +547,19 @@ export default function HistoricalTable({
             type="button"
             id="in-progress-tab-btn"
             onClick={() => { setActiveTab('Active'); setSelectedHaulIds(new Set()); }}
-            className={`px-6 py-2.5 rounded-xl text-sm font-semibold transition-all ${activeTab === 'Active' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500 hover:text-slate-700'}`}
+            className={`px-6 py-2.5 rounded-xl text-sm font-semibold transition-all flex items-center gap-2 ${activeTab === 'Active' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500 hover:text-slate-700'}`}
           >
-            In Progress Units
+            <span>In Progress Units</span>
+            <span className={`px-1.5 py-0.5 text-[10px] font-black rounded-full ${activeTab === 'Active' ? 'bg-blue-100 text-blue-700' : 'bg-slate-200 text-slate-650'}`}>{activeCount}</span>
           </button>
           <button 
             type="button"
             id="completed-tab-btn"
             onClick={() => { setActiveTab('Completed'); setSelectedHaulIds(new Set()); }}
-            className={`px-6 py-2.5 rounded-xl text-sm font-semibold transition-all ${activeTab === 'Completed' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500 hover:text-slate-700'}`}
+            className={`px-6 py-2.5 rounded-xl text-sm font-semibold transition-all flex items-center gap-2 ${activeTab === 'Completed' ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500 hover:text-slate-700'}`}
           >
-            Completed
+            <span>Completed</span>
+            <span className={`px-1.5 py-0.5 text-[10px] font-black rounded-full ${activeTab === 'Completed' ? 'bg-blue-100 text-blue-700' : 'bg-slate-200 text-slate-650'}`}>{completedCount}</span>
           </button>
         </div>
       </div>

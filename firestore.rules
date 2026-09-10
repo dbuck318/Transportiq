@@ -8,7 +8,7 @@ service cloud.firestore {
 
     // --- SHARED HELPERS ---
     function isSignedIn() { return request.auth != null; }
-    function isSuperAdmin() { return isSignedIn() && (request.auth.token.email == 'david.a.buckley71@gmail.com' || request.auth.token.email == 'support@transportiq.com'); }
+    function isSuperAdmin() { return isSignedIn() && request.auth.token.email == 'support@transportiq.com'; }
     function isAdmin() { return isSignedIn() && (isSuperAdmin() || exists(/databases/$(database)/documents/admins/$(request.auth.uid))); }
     function incoming() { return request.resource.data; }
     function existing() { return resource.data; }

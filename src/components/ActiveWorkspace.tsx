@@ -1273,10 +1273,27 @@ export default function ActiveWorkspace({ haul, onClose, customFolders = [], onU
       const currentStats = calculateTotals(targetHaul, expensesRef.current);
       const { id, ownerId, status, createdAt, updatedAt, ...dataToSave } = targetHaul as any;
       
+      const numericFields = [
+        'totalMiles', 'loadedMiles', 'deadheadMiles', 'ratePerMile',
+        'scaleWeight', 'grossWeight', 'grossRevenue', 'totalOperatingCosts',
+        'netProfit', 'milesPerGallon', 'loadedMpg', 'deadheadMpg',
+        'axles', 'unitLength', 'unitLength2', 'unitLength3',
+        'grossWeight2', 'grossWeight3', 'scaleWeight2', 'scaleWeight3'
+      ];
+
       const cleanedDataToSave: any = {};
       Object.keys(dataToSave).forEach(key => {
-        if (dataToSave[key] !== undefined) {
-          cleanedDataToSave[key] = dataToSave[key];
+        let val = dataToSave[key];
+        if (val !== undefined) {
+          if (numericFields.includes(key)) {
+            if (val === '' || val === null || isNaN(Number(val))) {
+              cleanedDataToSave[key] = 0;
+            } else {
+              cleanedDataToSave[key] = Number(val);
+            }
+          } else {
+            cleanedDataToSave[key] = val;
+          }
         }
       });
       
@@ -1363,6 +1380,19 @@ export default function ActiveWorkspace({ haul, onClose, customFolders = [], onU
       onClose();
     } catch (err) {
       console.error("Error marking haul completed:", err);
+    }
+  };
+
+  const handleMoveToActive = async () => {
+    if (!haul?.id) return;
+    try {
+      await updateDoc(doc(db, 'hauls', haul.id), {
+        status: 'Active',
+        updatedAt: serverTimestamp()
+      });
+    } catch (err: any) {
+      console.error("Error moving haul to active:", err);
+      alert("Failed to move load back to In Progress: " + err.message);
     }
   };
 
@@ -1609,7 +1639,32 @@ export default function ActiveWorkspace({ haul, onClose, customFolders = [], onU
           </button>
         </header>
 
-        {/* Mobile-Only Prominent Receipt Scan Card */}
+        {/* Warning Banner for Completed/Finalized Hauls */}
+        {(haul.status === 'Completed' || haul.status === 'Finalized') && (
+          <div className="mb-6 p-4 sm:p-5 bg-amber-50/70 border border-amber-200/60 rounded-3xl flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-sm animate-fade-in">
+            <div className="flex items-start gap-3">
+              <div className="p-2.5 bg-amber-100 text-amber-800 rounded-2xl mt-0.5 shrink-0 flex items-center justify-center">
+                <AlertCircle className="w-5 h-5" />
+              </div>
+              <div className="space-y-1">
+                <h4 className="text-sm font-extrabold text-slate-900 tracking-tight">This Load is Marked as Completed</h4>
+                <p className="text-xs text-slate-500 leading-relaxed max-w-2xl">
+                  Edits are currently locked. If you need to make changes or correct missing information, click the button to temporarily move this load back to <strong className="text-blue-600">In Progress</strong>.
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={handleMoveToActive}
+              className="md:self-center self-start px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl text-xs font-bold tracking-tight transition-all shadow-sm shrink-0"
+            >
+              Move to In Progress
+            </button>
+          </div>
+        )}
+
+        <fieldset disabled={haul.status !== 'Active'} className="w-full">
+          {/* Mobile-Only Prominent Receipt Scan Card */}
         <div className="sm:hidden mb-6">
           <div className="bg-gradient-to-r from-purple-600 to-indigo-600 p-5 rounded-[28px] text-white shadow-md flex items-center justify-between gap-4">
             <div className="space-y-1">
@@ -3195,7 +3250,8 @@ export default function ActiveWorkspace({ haul, onClose, customFolders = [], onU
             </button>
           </div>
         </div>
-      </div>
+      </fieldset>
+    </div>
 
       {/* Receipt Image Viewer Modal */}
       {selectedViewerReceipt && (
