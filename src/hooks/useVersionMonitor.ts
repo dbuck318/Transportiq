@@ -48,13 +48,10 @@ export function useVersionMonitor() {
     const checkVersion = async () => {
       const now = Date.now();
       
-      // Fetch version from server on every mount to make sure updates are immediately detected
-      setChecking(true);
       try {
         const res = await fetch(`/api/version?t=${now}`, { cache: 'no-store' });
         if (!res.ok) {
           console.warn("Version check endpoint health issues:", res.status);
-          setChecking(false);
           return;
         }
         
@@ -90,13 +87,16 @@ export function useVersionMonitor() {
         }
       } catch (err) {
         console.warn("Version check failed:", err);
-      } finally {
-        setChecking(false);
       }
     };
 
     // Check version immediately on mount
     checkVersion();
+
+    // Check periodically every 30 seconds for background updates
+    const interval = setInterval(checkVersion, 30000);
+
+    return () => clearInterval(interval);
   }, [clientVersion]);
 
   const forceCheck = async () => {
