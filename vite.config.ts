@@ -87,7 +87,7 @@ export default defineConfig(({mode}) => {
           ]
         },
         devOptions: {
-          enabled: true,
+          enabled: false,
           type: 'module'
         }
       })
@@ -108,6 +108,7 @@ export default defineConfig(({mode}) => {
       hmr: process.env.DISABLE_HMR !== 'true',
       // Disable file watching when DISABLE_HMR is true to save CPU during agent edits.
       watch: process.env.DISABLE_HMR === 'true' ? null : {},
+      allowedHosts: ['transportlogiq.com', '.transportlogiq.com'],
     },
   };
 });
