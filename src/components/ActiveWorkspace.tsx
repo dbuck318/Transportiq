@@ -1,4 +1,4 @@
-import { useEffect, useState, ChangeEvent, useRef, useMemo } from "react";
+import React, { useEffect, useState, ChangeEvent, useRef, useMemo } from "react";
 import { db, auth, handleFirestoreError, OperationType } from "../lib/firebase";
 import { collection, query, where, onSnapshot, addDoc, updateDoc, doc, serverTimestamp, deleteDoc, getDoc } from "firebase/firestore";
 import { Haul, Expense, OCRResult, ScannedReceipt } from "../types";
@@ -48,6 +48,8 @@ interface Props {
   customFolders?: string[];
   onUpdateFolders?: (folders: string[]) => void;
   operatorType?: string | null;
+  onNavigatePrev?: () => void;
+  onNavigateNext?: () => void;
 }
 
 const STATE_FUEL_PRICES: Record<string, { gas: number, diesel: number }> = {
@@ -702,7 +704,7 @@ const fuelDataCache: Record<string, {
   routeFuelSource: string;
 }> = {};
 
-export default function ActiveWorkspace({ haul, onClose, customFolders = [], onUpdateFolders, operatorType }: Props) {
+export default function ActiveWorkspace({ haul, onClose, customFolders = [], onUpdateFolders, operatorType, onNavigatePrev, onNavigateNext }: Props) {
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [isUploading, setIsUploading] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
@@ -722,6 +724,50 @@ export default function ActiveWorkspace({ haul, onClose, customFolders = [], onU
   const [manualFuelPrice, setManualFuelPrice] = useState<number | null>(null);
   const [showTopConfigs, setShowTopConfigs] = useState(false);
   const [showMySimilarUnits, setShowMySimilarUnits] = useState(false);
+
+  // Swipe gesture tracking (back and forward)
+  const touchStartRef = useRef<{ x: number; y: number; time: number } | null>(null);
+
+  const handleTouchStartGesture = (e: React.TouchEvent) => {
+    if (e.touches.length !== 1) return;
+    const target = e.target as HTMLElement;
+    // Don't interfere with inputs, buttons, sliders or interactive controls
+    if (target.closest('input, textarea, select, button, [data-no-swipe], table, .overflow-x-auto')) return;
+    touchStartRef.current = {
+      x: e.touches[0].clientX,
+      y: e.touches[0].clientY,
+      time: Date.now()
+    };
+  };
+
+  const handleTouchEndGesture = (e: React.TouchEvent) => {
+    if (!touchStartRef.current) return;
+    const start = touchStartRef.current;
+    touchStartRef.current = null;
+    const endX = e.changedTouches[0].clientX;
+    const endY = e.changedTouches[0].clientY;
+    const deltaX = endX - start.x;
+    const deltaY = endY - start.y;
+    const duration = Date.now() - start.time;
+
+    // Must be a deliberate horizontal flick within 800ms
+    if (duration > 800) return;
+    if (Math.abs(deltaX) > 75 && Math.abs(deltaX) > Math.abs(deltaY) * 1.5) {
+      if (deltaX > 0) {
+        // Swiped Right -> Back gesture
+        if (onNavigatePrev) {
+          onNavigatePrev();
+        } else {
+          handleClose();
+        }
+      } else {
+        // Swiped Left -> Forward gesture
+        if (onNavigateNext) {
+          onNavigateNext();
+        }
+      }
+    }
+  };
 
   // Read from in-memory cache if available
   const cachedData = haul?.id ? fuelDataCache[haul.id] : null;
@@ -1608,20 +1654,23 @@ export default function ActiveWorkspace({ haul, onClose, customFolders = [], onU
       exit={{ y: '100%' }}
       transition={{ type: 'spring', damping: 25, stiffness: 200 }}
       className="fixed inset-0 z-[60] bg-slate-50 overflow-y-auto"
+      onTouchStart={handleTouchStartGesture}
+      onTouchEnd={handleTouchEndGesture}
     >
       <div className="max-w-6xl mx-auto px-4 sm:px-8 py-8 sm:py-10">
         <header className="flex items-center justify-between gap-4 mb-4 sm:mb-8 mt-2 sm:mt-0">
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-3 sm:gap-4">
             <button 
               onClick={handleClose}
-              className="hidden sm:flex p-3 bg-white rounded-2xl shadow-sm border border-slate-200 hover:bg-slate-50 hover:shadow transition-all group"
+              className="flex items-center justify-center p-2.5 sm:p-3 bg-white rounded-2xl shadow-sm border border-slate-200 hover:bg-slate-50 hover:shadow active:scale-95 transition-all group shrink-0 min-w-[44px] min-h-[44px] cursor-pointer"
               title="Close Workspace"
+              aria-label="Close Workspace"
             >
-              <X className="w-6 h-6 text-slate-500 group-hover:text-slate-800" />
+              <X className="w-5 h-5 sm:w-6 sm:h-6 text-slate-600 group-hover:text-slate-900" />
             </button>
             <div>
-              <h1 className="text-2xl sm:text-3xl font-black text-slate-900 tracking-tight">Trip Workspace</h1>
-              <p className="text-sm font-medium text-slate-500 mt-1">Manage active load details for <span className="text-blue-600 font-bold">{localHaul.unitNumber}</span></p>
+              <h1 className="text-xl sm:text-3xl font-black text-slate-900 tracking-tight">Trip Workspace</h1>
+              <p className="text-xs sm:text-sm font-medium text-slate-500 mt-0.5 sm:mt-1">Manage active load details for <span className="text-blue-600 font-bold">{localHaul.unitNumber}</span></p>
             </div>
           </div>
 

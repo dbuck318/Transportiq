@@ -45,7 +45,8 @@ export default defineConfig(({mode}) => {
           name: 'Transport LogIQ',
           short_name: 'Transport LogIQ',
           description: 'Transport LogIQ Operational Database and PWA',
-          theme_color: '#ffffff',
+          theme_color: '#0f172a',
+          background_color: '#0f172a',
           icons: [
             {
               src: 'icon.svg',
@@ -84,6 +85,10 @@ export default defineConfig(({mode}) => {
               purpose: 'maskable'
             }
           ]
+        },
+        devOptions: {
+          enabled: true,
+          type: 'module'
         }
       })
     ],

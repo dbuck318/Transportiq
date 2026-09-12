@@ -6,6 +6,7 @@
       (function() {
         var silenceKeywords = [
           'WebSocket', 'websocket', 'WebSocket closed without opened',
+          'failed to connect to websocket', '[vite]',
           'Script error', 'Script error.',
           '@firebase/firestore', 'WebChannelConnection', "RPC 'Write' stream", 'transport errored',
           'firebase', 'firestore', 'WebAuthn', 'auth'
@@ -73,6 +74,14 @@
           var err = error ? String(error.message || error) : '';
           if (shouldSilence(msg) || shouldSilence(src) || shouldSilence(err)) {
             return true; // Suppress reporting and browser console logs
+          }
+        };
+
+        window.onunhandledrejection = function(event) {
+          var msg = event && event.reason ? (event.reason.message || String(event.reason)) : '';
+          if (shouldSilence(msg)) {
+            if (event.preventDefault) event.preventDefault();
+            return true;
           }
         };
       })();

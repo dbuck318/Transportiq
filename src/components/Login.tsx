@@ -28,17 +28,26 @@ export default function Login() {
   const [verificationSent, setVerificationSent] = useState(false);
 
   const syncUserProfile = async (user: any) => {
+    const appVersion = (import.meta as any).env?.VITE_APP_VERSION || '1.5.77';
+    sessionStorage.setItem('lod_session_active', 'true');
+    sessionStorage.setItem('lod_session_start', Date.now().toString());
+    localStorage.setItem('lod_last_active_time', Date.now().toString());
+    localStorage.removeItem('lod_background_entered');
+
     const userRef = doc(db, 'users', user.uid);
     const userSnap = await getDoc(userRef);
     
     if (!userSnap.exists()) {
+      // New user setup: suppress update notification by marking current version as seen
+      localStorage.setItem('last_seen_version', appVersion);
       await setDoc(userRef, {
         email: user.email,
         displayName: user.displayName || 'Operator',
         photoURL: user.photoURL || '',
         createdAt: serverTimestamp(),
         lastLogin: serverTimestamp(),
-        lastActive: serverTimestamp()
+        lastActive: serverTimestamp(),
+        lastSeenVersion: appVersion
       });
     } else {
       await setDoc(userRef, { lastLogin: serverTimestamp(), lastActive: serverTimestamp() }, { merge: true });
@@ -74,11 +83,23 @@ export default function Login() {
       const optionsRes = await fetch('/api/auth/generate-authentication-options', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email }),
+        body: JSON.stringify({ email: email.trim() }),
       });
       
+      if (!optionsRes.ok) {
+        let errMsg = 'Biometric sign-in is not configured for this account';
+        try {
+          const errData = await optionsRes.json();
+          if (errData.error) errMsg = errData.error;
+        } catch {
+          const t = await optionsRes.text();
+          if (t) errMsg = t;
+        }
+        throw new Error(errMsg);
+      }
+
       const { options, userId } = await optionsRes.json();
-      if (!options) throw new Error('Biometrics not set up for this account');
+      if (!options) throw new Error('No biometric key found for this account. Please sign in with password first.');
 
       const asseResp = await startAuthentication({ optionsJSON: options });
 
@@ -88,17 +109,36 @@ export default function Login() {
         body: JSON.stringify({ body: asseResp, userId }),
       });
 
+      if (!verifyRes.ok) {
+        let errMsg = 'Biometric verification failed';
+        try {
+          const errData = await verifyRes.json();
+          if (errData.error) errMsg = errData.error;
+        } catch {
+          const t = await verifyRes.text();
+          if (t) errMsg = t;
+        }
+        throw new Error(errMsg);
+      }
+
       const { verified, customToken } = await verifyRes.json();
 
       if (verified && customToken) {
         await setPersistence(auth, staySignedIn ? browserLocalPersistence : browserSessionPersistence);
         const result = await signInWithCustomToken(auth, customToken);
         await syncUserProfile(result.user);
+      } else if (verified) {
+        // Biometric verified
+        setError('Biometric key verified! Please sign in with your password once to establish your session on this browser.');
       } else {
         throw new Error('Biometric verification failed');
       }
     } catch (err: any) {
-      setError(err.message === 'The user canceled the operation.' ? 'Biometric login cancelled' : err.message);
+      const isCancellation = 
+        err.message?.includes('canceled') || 
+        err.message?.includes('cancelled') ||
+        err.name === 'NotAllowedError';
+      setError(isCancellation ? 'Biometric login was cancelled' : (err.message || 'Biometric login failed'));
     } finally {
       setLoading(false);
     }

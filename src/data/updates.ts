@@ -65,26 +65,21 @@ export function parseVersion(v: string): number {
 }
 
 export function getUpdatesSince(lastSeenVersion: string | null, currentVersion: string): AppUpdate[] {
-  const currentVal = parseVersion(currentVersion);
-  const todayThreshold = parseVersion("1.5.70");
-  
+  // If first time user (no lastSeenVersion recorded), they do not see an update notification
   if (!lastSeenVersion || lastSeenVersion === "development") {
-    // Return all of today's updates by default (version >= 1.5.70)
-    return APP_UPDATES.filter(u => parseVersion(u.version) >= todayThreshold);
+    return [];
   }
 
+  const currentVal = parseVersion(currentVersion);
   const lastSeenVal = parseVersion(lastSeenVersion);
 
-  // Filter updates released after the last seen version up to current version
-  const updates = APP_UPDATES.filter(update => {
+  if (currentVal <= lastSeenVal) {
+    return [];
+  }
+
+  // Filter ONLY updates released strictly after the last seen version up to current version
+  return APP_UPDATES.filter(update => {
     const updateVal = parseVersion(update.version);
     return updateVal > lastSeenVal && updateVal <= currentVal;
   });
-
-  // If there are no updates in the range, fallback to returning all of today's updates
-  if (updates.length === 0) {
-    return APP_UPDATES.filter(u => parseVersion(u.version) >= todayThreshold);
-  }
-
-  return updates;
 }

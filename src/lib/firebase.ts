@@ -57,4 +57,10 @@ export async function testConnection() {
   }
 }
 
-export const logout = () => auth.signOut();
+export const logout = () => {
+  try {
+    sessionStorage.removeItem('lod_session_active');
+    localStorage.removeItem('lod_background_entered');
+  } catch (e) {}
+  return auth.signOut();
+};

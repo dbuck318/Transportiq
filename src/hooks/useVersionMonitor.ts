@@ -1,4 +1,5 @@
 import { useEffect, useState, useRef } from 'react';
+import { getUpdatesSince } from '../data/updates';
 
 export function useVersionMonitor() {
   const [updateAvailable, setUpdateAvailable] = useState(false);
@@ -25,12 +26,20 @@ export function useVersionMonitor() {
       }
 
       if (!lastSeen) {
-        setJustUpdated(true);
+        // First-time user / new account setup: do not display an update notification
+        setJustUpdated(false);
         localStorage.setItem('last_seen_version', clientVersion);
       } else {
         const cleanLastSeen = lastSeen.trim().replace(/^v/, '');
         if (cleanLastSeen !== cleanClient) {
-          setJustUpdated(true);
+          // Existing user who opened an earlier version: only notify if there are updates since lastSeen
+          const updates = getUpdatesSince(lastSeen, clientVersion);
+          if (updates.length > 0) {
+            setJustUpdated(true);
+          } else {
+            setJustUpdated(false);
+            localStorage.setItem('last_seen_version', clientVersion);
+          }
         }
       }
     }

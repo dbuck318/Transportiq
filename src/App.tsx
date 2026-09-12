@@ -3,7 +3,7 @@ import { auth, logout, db, handleFirestoreError, OperationType } from './lib/fir
 import { onAuthStateChanged, User } from 'firebase/auth';
 import { collection, query, where, onSnapshot, orderBy, addDoc, serverTimestamp, doc, getDoc, updateDoc, setDoc } from 'firebase/firestore';
 import { Haul } from './types';
-import { LogOut, Shield, AlertCircle, Plus, LayoutDashboard, History, ExternalLink, Key, Fingerprint, Download, Menu, X, Folder, Trash2, GripVertical, ChevronDown, ChevronRight, Settings, ChevronUp } from 'lucide-react';
+import { LogOut, Shield, AlertCircle, Plus, LayoutDashboard, History, ExternalLink, Key, Fingerprint, Download, Menu, X, Folder, Trash2, GripVertical, ChevronDown, ChevronRight, Settings, ChevronUp, MessageSquare } from 'lucide-react';
 import PickupTrailerIcon from './components/PickupTrailerIcon';
 import { motion, AnimatePresence } from 'motion/react';
 import ActiveWorkspace from './components/ActiveWorkspace';
@@ -12,6 +12,7 @@ import WeeklySummary from './components/WeeklySummary';
 import Login from './components/Login';
 import AdminPanel from './components/AdminPanel';
 import BiometricSettings from './components/BiometricSettings';
+import FeedbackTab from './components/FeedbackTab';
 import { APIProvider } from '@vis.gl/react-google-maps';
 import { useVersionMonitor } from './hooks/useVersionMonitor';
 import { getUpdatesSince, AppUpdate } from './data/updates';
@@ -110,7 +111,7 @@ export default function App() {
   const patch = versionCount % 100;
   const displayVersion = `v${major}.${minor.toString().padStart(2, '0')}.${patch.toString().padStart(2, '0')}`;
 
-  const [view, setView] = useState<'dashboard' | 'history' | 'admin' | 'settings'>(() => {
+  const [view, setView] = useState<'dashboard' | 'history' | 'admin' | 'settings' | 'feedback'>(() => {
     try {
       return (localStorage.getItem('lod_view') as any) || 'dashboard';
     } catch {
@@ -307,12 +308,17 @@ export default function App() {
   const [showUpdatePopup, setShowUpdatePopup] = useState(false);
 
   useEffect(() => {
-    if (updateAvailable) {
-      setShowUpdatePopup(true);
-    } else {
-      setShowUpdatePopup(false);
+    // Only show update modal for existing users if there are new updates available
+    const lastSeen = localStorage.getItem('last_seen_version');
+    if (updateAvailable && lastSeen && lastSeen !== 'development') {
+      const pendingUpdates = getUpdatesSince(currentVersion, latestServerVersion || currentVersion || '1.5.77');
+      if (pendingUpdates.length > 0) {
+        setShowUpdatePopup(true);
+        return;
+      }
     }
-  }, [updateAvailable]);
+    setShowUpdatePopup(false);
+  }, [updateAvailable, currentVersion, latestServerVersion]);
 
   const triggerAppUpdate = async () => {
     if (isAutoUpdating) return;
@@ -376,15 +382,35 @@ export default function App() {
   useEffect(() => {
     let unsubProfile: (() => void) | null = null;
     const unsubAuth = onAuthStateChanged(auth, (u) => {
-      setUser(u);
-      setLoading(false);
-      
       if (unsubProfile) {
         unsubProfile();
         unsubProfile = null;
       }
 
       if (u) {
+        // Check if app was left in background for 30 or more minutes
+        const now = Date.now();
+        const THIRTY_MINUTES_MS = 30 * 60 * 1000;
+        const backgroundEnteredStr = localStorage.getItem('lod_background_entered');
+        if (backgroundEnteredStr) {
+          const entered = parseInt(backgroundEnteredStr, 10);
+          if (entered > 0 && (now - entered) >= THIRTY_MINUTES_MS) {
+            localStorage.removeItem('lod_background_entered');
+            localStorage.removeItem('lod_last_active_time');
+            logout();
+            setUser(null);
+            setLoading(false);
+            return;
+          }
+        }
+
+        localStorage.removeItem('lod_background_entered');
+        localStorage.setItem('lod_last_active_time', now.toString());
+        sessionStorage.setItem('lod_session_active', 'true');
+
+        setUser(u);
+        setLoading(false);
+
         const emailLower = (u.email || '').toLowerCase();
         const isSuper = SUPER_ADMIN_EMAILS.map(e => e.toLowerCase()).includes(emailLower);
         setIsSuperAdmin(isSuper);
@@ -456,6 +482,8 @@ export default function App() {
           setIsAdmin(isSuper);
         });
       } else {
+        setUser(null);
+        setLoading(false);
         setIsAdmin(false);
         setIsSuperAdmin(false);
         setVersionCount(0);
@@ -469,6 +497,125 @@ export default function App() {
       if (unsubProfile) unsubProfile();
     };
   }, []);
+
+  // 30-minute background auto-logout and inactivity monitoring
+  useEffect(() => {
+    if (!user) return;
+
+    const THIRTY_MINUTES_MS = 30 * 60 * 1000;
+
+    const checkAndTriggerTimeout = () => {
+      const now = Date.now();
+      const enteredStr = localStorage.getItem('lod_background_entered');
+      if (enteredStr) {
+        const entered = parseInt(enteredStr, 10);
+        if (entered > 0 && (now - entered) >= THIRTY_MINUTES_MS) {
+          localStorage.removeItem('lod_background_entered');
+          localStorage.removeItem('lod_last_active_time');
+          logout();
+          setUser(null);
+          setLoading(false);
+          return true;
+        }
+      }
+
+      const lastActiveStr = localStorage.getItem('lod_last_active_time');
+      if (lastActiveStr) {
+        const lastActive = parseInt(lastActiveStr, 10);
+        if (lastActive > 0 && (now - lastActive) >= THIRTY_MINUTES_MS) {
+          localStorage.removeItem('lod_background_entered');
+          localStorage.removeItem('lod_last_active_time');
+          logout();
+          setUser(null);
+          setLoading(false);
+          return true;
+        }
+      }
+      return false;
+    };
+
+    const handleVisibilityChange = () => {
+      const now = Date.now();
+      if (document.visibilityState === 'hidden') {
+        localStorage.setItem('lod_background_entered', now.toString());
+      } else if (document.visibilityState === 'visible') {
+        const timedOut = checkAndTriggerTimeout();
+        if (!timedOut) {
+          localStorage.removeItem('lod_background_entered');
+          localStorage.setItem('lod_last_active_time', now.toString());
+        }
+      }
+    };
+
+    const recordUserInteraction = () => {
+      localStorage.setItem('lod_last_active_time', Date.now().toString());
+    };
+
+    const activityEvents = ['pointerdown', 'keydown', 'touchstart', 'scroll'];
+    activityEvents.forEach(evt => window.addEventListener(evt, recordUserInteraction, { passive: true }));
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    const interval = setInterval(checkAndTriggerTimeout, 15000);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      activityEvents.forEach(evt => window.removeEventListener(evt, recordUserInteraction));
+      clearInterval(interval);
+    };
+  }, [user]);
+
+  // Touch swipe gesture detection for navigating between views
+  const appTouchStartRef = React.useRef<{ x: number; y: number; time: number } | null>(null);
+
+  const handleAppTouchStart = (e: React.TouchEvent) => {
+    if (activeHaulId) return; // ActiveWorkspace manages its own swipe gestures
+    if (e.touches.length !== 1) return;
+    const target = e.target as HTMLElement;
+    if (target.closest('input, textarea, select, button, [data-no-swipe], table, .overflow-x-auto')) return;
+    appTouchStartRef.current = {
+      x: e.touches[0].clientX,
+      y: e.touches[0].clientY,
+      time: Date.now()
+    };
+  };
+
+  const handleAppTouchEnd = (e: React.TouchEvent) => {
+    if (activeHaulId || !appTouchStartRef.current) return;
+    const start = appTouchStartRef.current;
+    appTouchStartRef.current = null;
+    const endX = e.changedTouches[0].clientX;
+    const endY = e.changedTouches[0].clientY;
+    const deltaX = endX - start.x;
+    const deltaY = endY - start.y;
+    const duration = Date.now() - start.time;
+
+    if (duration > 800) return;
+    if (Math.abs(deltaX) > 75 && Math.abs(deltaX) > Math.abs(deltaY) * 1.5) {
+      if (deltaX < 0) {
+        // Swiped Left -> Forward
+        if (view === 'dashboard') {
+          setView('history');
+        } else if (view === 'history') {
+          setView('settings');
+        } else if (view === 'settings') {
+          setView('feedback');
+        } else if (view === 'feedback' && isAdmin) {
+          setView('admin');
+        }
+      } else {
+        // Swiped Right -> Backward
+        if (view === 'admin') {
+          setView('feedback');
+        } else if (view === 'feedback') {
+          setView('settings');
+        } else if (view === 'settings') {
+          setView('history');
+        } else if (view === 'history') {
+          setView('dashboard');
+        }
+      }
+    }
+  };
 
   useEffect(() => {
     if (!user) {
@@ -883,14 +1030,24 @@ export default function App() {
                 </div>
               )}
               <li 
+                id="sidebar-nav-settings"
                 onClick={() => { setView('settings'); setIsMobileMenuOpen(false); }}
                 className={`px-4 py-3 cursor-pointer text-sm font-medium rounded-xl flex items-center gap-3 transition-colors ${view === 'settings' ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-50'}`}
               >
                 <Settings className="w-4 h-4" />
                 Settings
               </li>
+              <li 
+                id="sidebar-nav-feedback"
+                onClick={() => { setView('feedback'); setIsMobileMenuOpen(false); }}
+                className={`px-4 py-3 cursor-pointer text-sm font-medium rounded-xl flex items-center gap-3 transition-colors ${view === 'feedback' ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-50'}`}
+              >
+                <MessageSquare className="w-4 h-4" />
+                Feedback
+              </li>
               {isAdmin && (
                 <li 
+                  id="sidebar-nav-admin"
                   onClick={() => { setView('admin'); setIsMobileMenuOpen(false); }}
                   className={`px-4 py-3 cursor-pointer text-sm font-medium rounded-xl flex items-center gap-3 transition-colors ${view === 'admin' ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-50'}`}
                 >
@@ -940,7 +1097,11 @@ export default function App() {
         </aside>
 
         {/* Main Workspace Area */}
-        <main className="flex-1 flex flex-col min-w-0">
+        <main 
+          className="flex-1 flex flex-col min-w-0"
+          onTouchStart={handleAppTouchStart}
+          onTouchEnd={handleAppTouchEnd}
+        >
           <header className="h-20 bg-white/80 backdrop-blur-md border-b border-slate-200 flex items-center justify-between px-4 md:px-10 flex-shrink-0">
             <div className="flex items-center gap-4 md:gap-6">
               <button 
@@ -952,9 +1113,11 @@ export default function App() {
               
               <div className="flex flex-col">
                 <h2 className="text-slate-900 font-bold text-lg leading-tight capitalize">
-                  {view === 'dashboard' ? 'Overview' : view === 'history' ? (operatorType === 'Hot Shot' ? 'Load History' : 'Unit History') : view === 'settings' ? 'Settings' : 'Administration'}
+                  {view === 'dashboard' ? 'Overview' : view === 'history' ? (operatorType === 'Hot Shot' ? 'Load History' : 'Unit History') : view === 'settings' ? 'Settings' : view === 'feedback' ? 'Feedback' : 'Administration'}
                 </h2>
-                <p className="hidden md:block text-slate-400 text-xs">Welcome back to your workspace</p>
+                <p className="hidden md:block text-slate-400 text-xs">
+                  {view === 'feedback' ? 'Help us improve Transport LogIQ' : 'Welcome back to your workspace'}
+                </p>
               </div>
               <div className="hidden md:block h-8 w-[1px] bg-slate-100 mx-2"></div>
               <div className="hidden md:block">
@@ -1080,6 +1243,15 @@ export default function App() {
                 >
                   <BiometricSettings />
                 </motion.div>
+              ) : view === 'feedback' ? (
+                <motion.div
+                  key="feedback"
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -10 }}
+                >
+                  <FeedbackTab currentUser={user} />
+                </motion.div>
               ) : (
                 <motion.div
                   key="admin"
@@ -1097,18 +1269,35 @@ export default function App() {
           </div>
         </main>
 
-        <AnimatePresence>
-          {activeHaulId && activeWorkspaceHaul && (
-            <ActiveWorkspace 
-              key={activeHaulId}
-              haul={activeWorkspaceHaul} 
-              onClose={() => setActiveHaulId(null)} 
-              customFolders={customFolders}
-              onUpdateFolders={(folders) => saveCustomFoldersInApp(folders, true)}
-              operatorType={operatorType}
-            />
-          )}
-        </AnimatePresence>
+        {(() => {
+          const relevantHaulsList = view === 'history'
+            ? (hauls.filter(h => (h.status === 'Completed' || h.status === 'Finalized') && (!activeFolderFilter || h.folder === activeFolderFilter)) || [])
+            : (hauls.filter(h => h.status === 'Active') || []);
+          const currentWorkspaceIndex = relevantHaulsList.findIndex(h => h.id === activeHaulId);
+          const handleWorkspacePrev = currentWorkspaceIndex > 0 ? () => {
+            setActiveHaulId(relevantHaulsList[currentWorkspaceIndex - 1].id);
+          } : undefined;
+          const handleWorkspaceNext = currentWorkspaceIndex >= 0 && currentWorkspaceIndex < relevantHaulsList.length - 1 ? () => {
+            setActiveHaulId(relevantHaulsList[currentWorkspaceIndex + 1].id);
+          } : undefined;
+
+          return (
+            <AnimatePresence>
+              {activeHaulId && activeWorkspaceHaul && (
+                <ActiveWorkspace 
+                  key={activeHaulId}
+                  haul={activeWorkspaceHaul} 
+                  onClose={() => setActiveHaulId(null)} 
+                  customFolders={customFolders}
+                  onUpdateFolders={(folders) => saveCustomFoldersInApp(folders, true)}
+                  operatorType={operatorType}
+                  onNavigatePrev={handleWorkspacePrev}
+                  onNavigateNext={handleWorkspaceNext}
+                />
+              )}
+            </AnimatePresence>
+          );
+        })()}
 
         <AnimatePresence>
           {folderToDelete && (
@@ -1191,49 +1380,22 @@ export default function App() {
 
                 <div className="space-y-4 mb-6">
                   <p className="text-sm text-slate-500 leading-relaxed">
-                    A new update is ready for Transport LogIQ! Here is a summary of what's new and improved in this build:
+                    A new update is ready for Transport LogIQ! Here is what's new since your current build:
                   </p>
                   
                   <div className="bg-slate-50 rounded-2xl p-4 border border-slate-100/60 max-h-[220px] overflow-y-auto space-y-3 scrollbar-thin">
-                    <div className="flex gap-2.5 items-start">
-                      <span className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1.5 flex-shrink-0" />
-                      <div>
-                        <p className="text-xs font-bold text-slate-800">Precise Aerodynamic Drag</p>
-                        <p className="text-xs text-slate-500 leading-relaxed mt-0.5">MPG calculations now adjust according to the selected Towable Unit Type (Travel Trailer, Fifth Wheel, GN Fifth Wheel, Park Model, Cargo Trailer) to reflect true wind-resistance profiles.</p>
+                    {getUpdatesSince(currentVersion, latestServerVersion || currentVersion || '1.5.77').map((update: AppUpdate, idx: number) => (
+                      <div key={idx} className="flex gap-2.5 items-start">
+                        <span className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1.5 flex-shrink-0" />
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <p className="text-xs font-bold text-slate-800">{update.title}</p>
+                            <span className="px-1.5 py-0.5 bg-slate-200/80 text-[9px] font-bold text-slate-500 rounded-md">v{update.version}</span>
+                          </div>
+                          <p className="text-xs text-slate-500 leading-relaxed mt-0.5">{update.description}</p>
+                        </div>
                       </div>
-                    </div>
-                    
-                    <div className="flex gap-2.5 items-start">
-                      <span className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1.5 flex-shrink-0" />
-                      <div>
-                        <p className="text-xs font-bold text-slate-800">Dynamic Trailer Length Penalty</p>
-                        <p className="text-xs text-slate-500 leading-relaxed mt-0.5">Expected MPG calculations now account for skin-friction and lateral wind resistance on longer trailers (0.03 MPG per foot above 20 feet).</p>
-                      </div>
-                    </div>
-
-                    <div className="flex gap-2.5 items-start">
-                      <span className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1.5 flex-shrink-0" />
-                      <div>
-                        <p className="text-xs font-bold text-slate-800">Multi-Axle Rolling Resistance</p>
-                        <p className="text-xs text-slate-500 leading-relaxed mt-0.5">Supports 1, 2, or 3-axle configurations to refine tire-to-road friction and drag predictions.</p>
-                      </div>
-                    </div>
-
-                    <div className="flex gap-2.5 items-start">
-                      <span className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1.5 flex-shrink-0" />
-                      <div>
-                        <p className="text-xs font-bold text-slate-800">Operational Unit Specifications</p>
-                        <p className="text-xs text-slate-500 leading-relaxed mt-0.5">Easily define your Unit Type via select menu and input exact Unit Length in feet directly in the Trip Workspace form.</p>
-                      </div>
-                    </div>
-
-                    <div className="flex gap-2.5 items-start">
-                      <span className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1.5 flex-shrink-0" />
-                      <div>
-                        <p className="text-xs font-bold text-slate-800">Sidebar Folder Management</p>
-                        <p className="text-xs text-slate-500 leading-relaxed mt-0.5">Add, manage, and delete workflow folders directly from the main sidebar for instant organization.</p>
-                      </div>
-                    </div>
+                    ))}
                   </div>
                 </div>
 
@@ -1268,7 +1430,7 @@ export default function App() {
         </AnimatePresence>
 
         <AnimatePresence>
-          {justUpdated && !showUpdatePopup && (
+          {justUpdated && !showUpdatePopup && getUpdatesSince(lastSeenVersion, currentVersion || '1.5.77').length > 0 && (
             <motion.div 
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}

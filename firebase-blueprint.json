@@ -78,6 +78,20 @@
         "amount": { "type": "number" }
       },
       "required": ["fileName", "fileType", "dataUrl", "timestamp", "vendor", "amount"]
+    },
+    "Feedback": {
+      "title": "User Feedback",
+      "description": "User feedback submissions sent to support",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string" },
+        "feedback": { "type": "string" },
+        "category": { "type": "string" },
+        "displayName": { "type": "string" },
+        "userId": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["email", "feedback"]
     }
   },
   "firestore": {
@@ -100,6 +114,10 @@
     "/admins": {
         "schema": "Admin",
         "description": "Authorization map for system administrators"
+    },
+    "/feedbacks/{feedbackId}": {
+        "schema": "Feedback",
+        "description": "Operator feedback tickets and notes"
     }
   }
 }

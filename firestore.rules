@@ -60,6 +60,13 @@ service cloud.firestore {
         && data.amount is number && data.amount >= 0;
     }
 
+    function isValidFeedback(data) {
+      return data.keys().hasAll(['email', 'feedback', 'createdAt'])
+        && data.email is string && data.email.size() <= 256
+        && data.feedback is string && data.feedback.size() <= 10000
+        && data.createdAt == request.time;
+    }
+
     // --- HAULS ---
     match /hauls/{haulId} {
       allow create: if isSignedIn() && isValidHaul(incoming()) 
@@ -133,6 +140,12 @@ service cloud.firestore {
       allow update: if isSignedIn() && request.auth.uid == userId
         && incoming().email == existing().email
         && incoming().createdAt == existing().createdAt;
+    }
+
+    // --- FEEDBACK ---
+    match /feedbacks/{feedbackId} {
+      allow create: if isSignedIn() && isValidFeedback(incoming());
+      allow read: if isAdmin();
     }
   }
 }

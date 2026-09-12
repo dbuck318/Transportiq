@@ -48,7 +48,7 @@ const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KE
 // to be set in the .env file in order to have sufficient permissions to read/write to Firestore.
 
 const app = express();
-const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+const PORT = 3000;
 
 // Allow Google Sites, custom domains, and iframe embedding globally
 app.use((req, res, next) => {
@@ -138,6 +138,216 @@ const sendAdminReport = async () => {
 cron.schedule('59 23 * * 0', () => {
     console.log("Running scheduled weekly report...");
     sendAdminReport();
+});
+
+// Endpoint: Submit Operator Feedback & Dispatch Email
+app.post("/api/feedback", async (req, res) => {
+  try {
+    const { email, feedback, category, userDisplayName, userId } = req.body || {};
+
+    if (!email || typeof email !== 'string' || !email.trim()) {
+      return res.status(400).json({ error: "Please provide a valid email address." });
+    }
+
+    if (!feedback || typeof feedback !== 'string' || !feedback.trim()) {
+      return res.status(400).json({ error: "Please enter your feedback before submitting." });
+    }
+
+    const trimmedEmail = email.trim();
+    const trimmedFeedback = feedback.trim();
+    const feedbackCategory = (typeof category === 'string' && category.trim()) ? category.trim() : "General Feedback";
+    const timestamp = new Date();
+
+    const formattedDate = `${timestamp.toLocaleString('en-US', {
+      dateStyle: 'full',
+      timeStyle: 'medium'
+    })} (${timestamp.toUTCString()})`;
+
+    // Build clean HTML email formatted for easy reading
+    const sanitizedFeedback = trimmedFeedback
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+
+    const htmlContent = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Transport LogIQ Feedback</title>
+</head>
+<body style="margin:0;padding:24px;background-color:#f1f5f9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#1e293b;">
+  <div style="max-width:640px;margin:0 auto;background:#ffffff;border-radius:16px;overflow:hidden;border:1px solid #e2e8f0;box-shadow:0 4px 12px rgba(0,0,0,0.06);">
+    <!-- Header Banner -->
+    <div style="background:linear-gradient(135deg, #1d4ed8 0%, #1e40af 100%);padding:28px 32px;color:#ffffff;">
+      <div style="display:inline-block;padding:4px 12px;background:rgba(255,255,255,0.18);border-radius:999px;font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;margin-bottom:10px;">
+        Transport LogIQ Management Portal
+      </div>
+      <h1 style="margin:0 0 6px 0;font-size:22px;font-weight:800;color:#ffffff;letter-spacing:-0.02em;">
+        Transport LogIQ Feedback
+      </h1>
+      <p style="margin:0;font-size:13px;color:#bfdbfe;">
+        New feedback submission received from operator
+      </p>
+    </div>
+
+    <!-- Metadata Card -->
+    <div style="padding:28px 32px;">
+      <div style="background:#f8fafc;border-radius:12px;padding:18px 20px;margin-bottom:24px;border:1px solid #e2e8f0;">
+        <table style="width:100%;border-collapse:collapse;font-size:13px;">
+          <tr>
+            <td style="padding:6px 0;color:#64748b;font-weight:600;width:130px;vertical-align:top;">Operator Email:</td>
+            <td style="padding:6px 0;color:#0f172a;font-weight:700;">
+              <a href="mailto:${trimmedEmail}" style="color:#2563eb;text-decoration:none;">${trimmedEmail}</a>
+            </td>
+          </tr>
+          ${userDisplayName ? `
+          <tr>
+            <td style="padding:6px 0;color:#64748b;font-weight:600;vertical-align:top;">Display Name:</td>
+            <td style="padding:6px 0;color:#0f172a;font-weight:600;">${userDisplayName}</td>
+          </tr>` : ''}
+          <tr>
+            <td style="padding:6px 0;color:#64748b;font-weight:600;vertical-align:top;">Category:</td>
+            <td style="padding:6px 0;color:#0f172a;">
+              <span style="display:inline-block;padding:3px 10px;background:#dbeafe;color:#1e40af;border-radius:6px;font-weight:700;font-size:12px;">
+                ${feedbackCategory}
+              </span>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:6px 0;color:#64748b;font-weight:600;vertical-align:top;">Submitted At:</td>
+            <td style="padding:6px 0;color:#475569;">${formattedDate}</td>
+          </tr>
+          ${userId ? `
+          <tr>
+            <td style="padding:6px 0;color:#64748b;font-weight:600;vertical-align:top;">Account UID:</td>
+            <td style="padding:6px 0;color:#64748b;font-family:monospace;font-size:12px;">${userId}</td>
+          </tr>` : ''}
+        </table>
+      </div>
+
+      <!-- Feedback Content Box -->
+      <h2 style="font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#475569;margin:0 0 10px 0;">
+        Feedback & Comments
+      </h2>
+      <div style="background:#ffffff;border:1.5px solid #cbd5e1;border-radius:12px;padding:20px;font-size:15px;line-height:1.65;color:#0f172a;white-space:pre-wrap;word-break:break-word;">${sanitizedFeedback}</div>
+
+      <!-- Quick Reply Banner -->
+      <div style="margin-top:20px;padding:12px 16px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;font-size:13px;color:#1e40af;">
+        <strong>Direct Reply:</strong> Hitting reply to this email will respond directly to <a href="mailto:${trimmedEmail}" style="color:#1d4ed8;font-weight:700;">${trimmedEmail}</a>.
+      </div>
+    </div>
+
+    <!-- Footer -->
+    <div style="border-top:1px solid #e2e8f0;padding:16px 32px;background:#f8fafc;font-size:11px;color:#94a3b8;text-align:center;">
+      Transport LogIQ Automated Feedback Notification System &bull; Confidential
+    </div>
+  </div>
+</body>
+</html>
+    `;
+
+    const textContent = `
+TRANSPORT LOGIQ FEEDBACK
+==============================================
+
+Operator Email: ${trimmedEmail}
+${userDisplayName ? `Display Name:   ${userDisplayName}\n` : ''}Category:       ${feedbackCategory}
+Submitted At:   ${formattedDate}
+${userId ? `Account UID:    ${userId}\n` : ''}
+----------------------------------------------
+FEEDBACK:
+----------------------------------------------
+
+${trimmedFeedback}
+
+----------------------------------------------
+Direct reply to this email will respond to: ${trimmedEmail}
+==============================================
+    `.trim();
+
+    // 1. Persist feedback locally to data/feedbacks.json
+    try {
+      const feedbackDir = path.join(process.cwd(), 'data');
+      if (!fs.existsSync(feedbackDir)) {
+        fs.mkdirSync(feedbackDir, { recursive: true });
+      }
+      const feedbackFilePath = path.join(feedbackDir, 'feedbacks.json');
+      let existingFeedbacks: any[] = [];
+      if (fs.existsSync(feedbackFilePath)) {
+        try {
+          existingFeedbacks = JSON.parse(fs.readFileSync(feedbackFilePath, 'utf8'));
+        } catch {}
+      }
+      existingFeedbacks.unshift({
+        id: 'fb_' + Date.now(),
+        email: trimmedEmail,
+        feedback: trimmedFeedback,
+        category: feedbackCategory,
+        userDisplayName: userDisplayName || null,
+        userId: userId || null,
+        createdAt: timestamp.toISOString()
+      });
+      fs.writeFileSync(feedbackFilePath, JSON.stringify(existingFeedbacks, null, 2), 'utf8');
+    } catch (e) {
+      console.warn("Failed to write to data/feedbacks.json:", e);
+    }
+
+    // 2. Mirror to Firestore if available
+    if (db) {
+      try {
+        await db.collection('feedbacks').add({
+          email: trimmedEmail,
+          feedback: trimmedFeedback,
+          category: feedbackCategory,
+          userDisplayName: userDisplayName || null,
+          userId: userId || null,
+          createdAt: new Date()
+        });
+      } catch (dbErr) {
+        console.warn("Could not mirror feedback to Firestore:", dbErr);
+      }
+    }
+
+    // 3. Dispatch Email to support@transportlogic.com
+    let emailSent = false;
+    let emailError: string | null = null;
+
+    if (resend) {
+      try {
+        const fromEmail = process.env.RESEND_FROM_EMAIL || 'Transport LogIQ Feedback <onboarding@resend.dev>';
+        const result = await resend.emails.send({
+          from: fromEmail,
+          to: ['support@transportlogic.com'],
+          replyTo: trimmedEmail,
+          subject: 'Transport LogIQ Feedback',
+          html: htmlContent,
+          text: textContent
+        });
+        console.log("Feedback email sent successfully via Resend:", result);
+        emailSent = true;
+      } catch (sendErr: any) {
+        console.error("Resend feedback email dispatch failed:", sendErr);
+        emailError = sendErr?.message || String(sendErr);
+      }
+    } else {
+      console.warn("Resend client not initialized (RESEND_API_KEY missing)");
+      emailError = "Resend API key not configured on server";
+    }
+
+    return res.json({
+      success: true,
+      emailSent,
+      emailError,
+      message: "Feedback recorded successfully."
+    });
+  } catch (err: any) {
+    console.error("Unexpected error in /api/feedback:", err);
+    return res.status(500).json({ error: err.message || "Failed to process feedback submission." });
+  }
 });
 
 let _ai: GoogleGenAI | null = null;
@@ -645,65 +855,147 @@ app.get("/api/community-hauls-summary", async (req, res) => {
   }
 });
 
-// Registration
-app.post('/api/auth/generate-registration-options', async (req, res) => {
-  const { email, userId, displayName } = req.body;
-  if (!db) return res.status(500).json({ error: "DB not initialized" });
+// --- Biometric Passkey / WebAuthn Storage & Helpers ---
+const AUTHENTICATORS_FILE = path.resolve(process.cwd(), 'data', 'authenticators.json');
 
-  const { origin: reqOrigin, rpID: reqRpID } = getRequestAuthContext(req);
+interface StoredAuthenticator {
+  credentialID: string;
+  credentialPublicKey: string;
+  counter: number;
+  credentialDeviceType?: string;
+  credentialBackedUp?: boolean;
+  userId: string;
+  email?: string;
+  displayName?: string;
+  transports?: string[];
+  createdAt: string;
+}
 
-  const userRef = db.collection('users').doc(userId);
-  const userSnap = await userRef.get();
-  
-  // Get existing authenticators
-  const authenticatorsSnap = await db.collection('authenticators').where('userId', '==', userId).get();
-  const excludeCredentials = authenticatorsSnap.docs.map(doc => ({
-    id: doc.id,
-    type: 'public-key' as const,
-    transports: doc.data().transports,
-  }));
+function loadAuthenticators(): StoredAuthenticator[] {
+  try {
+    if (fs.existsSync(AUTHENTICATORS_FILE)) {
+      const data = fs.readFileSync(AUTHENTICATORS_FILE, 'utf8');
+      return JSON.parse(data);
+    }
+  } catch (err) {
+    console.warn("Could not read authenticators file, starting empty:", err);
+  }
+  return [];
+}
 
-  const options = await generateRegistrationOptions({
-    rpName,
-    rpID: reqRpID,
-    userID: isoUint8Array.fromUTF8String(userId),
-    userName: email,
-    userDisplayName: displayName,
-    attestationType: 'none',
-    excludeCredentials,
-    authenticatorSelection: {
-      residentKey: 'preferred',
-      userVerification: 'preferred',
-      authenticatorAttachment: 'platform',
-    },
-  });
+function saveAuthenticators(authenticators: StoredAuthenticator[]) {
+  try {
+    const dataDir = path.dirname(AUTHENTICATORS_FILE);
+    if (!fs.existsSync(dataDir)) {
+      fs.mkdirSync(dataDir, { recursive: true });
+    }
+    fs.writeFileSync(AUTHENTICATORS_FILE, JSON.stringify(authenticators, null, 2), 'utf8');
+  } catch (err) {
+    console.error("Could not save authenticators:", err);
+  }
+}
 
-  // Store the current challenge temporarily (in a real app, use a session or Redis)
-  // For simplicity in this agent, we'll store it in a 'challenges' collection
-  await db.collection('challenges').doc(userId).set({
-    challenge: options.challenge,
-    type: 'registration',
-    timestamp: FieldValue.serverTimestamp()
-  });
+// In-memory challenge store with auto-expiry (5 minutes)
+interface StoredChallenge {
+  challenge: string;
+  type: 'registration' | 'authentication';
+  userId?: string;
+  email?: string;
+  timestamp: number;
+}
+const authChallenges = new Map<string, StoredChallenge>();
 
-  res.json(options);
+// Clean up stale challenges periodically
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, val] of authChallenges.entries()) {
+    if (now - val.timestamp > 5 * 60 * 1000) {
+      authChallenges.delete(key);
+    }
+  }
+}, 60 * 1000);
+
+// --- Biometric Authentication API Endpoints ---
+
+// Check biometric status for a user
+app.get('/api/auth/biometric-status/:email', (req, res) => {
+  try {
+    const email = req.params.email;
+    if (!email) return res.json({ hasBiometrics: false, count: 0 });
+    const all = loadAuthenticators();
+    const userAuths = all.filter(a => a.email && a.email.toLowerCase() === email.toLowerCase());
+    res.json({ hasBiometrics: userAuths.length > 0, count: userAuths.length });
+  } catch (err: any) {
+    res.json({ hasBiometrics: false, count: 0 });
+  }
 });
 
-app.post('/api/auth/verify-registration', async (req, res) => {
-  const { body, userId } = req.body;
-  if (!db) return res.status(500).json({ error: "DB not initialized" });
-
-  const { origin: reqOrigin, rpID: reqRpID } = getRequestAuthContext(req);
-
-  const challengeSnap = await db.collection('challenges').doc(userId).get();
-  if (!challengeSnap.exists) return res.status(400).json({ error: "Challenge not found" });
-  
-  const expectedChallenge = challengeSnap.data()?.challenge;
-
+// Registration: 1. Generate registration options
+app.post('/api/auth/generate-registration-options', async (req, res) => {
   try {
+    const { email, userId, displayName } = req.body || {};
+    if (!userId || !email) {
+      return res.status(400).json({ error: "Missing required fields (userId, email)" });
+    }
+
+    const { origin: reqOrigin, rpID: reqRpID } = getRequestAuthContext(req);
+
+    // Get existing authenticators to exclude them from registration
+    const allAuthenticators = loadAuthenticators();
+    const userAuthenticators = allAuthenticators.filter(a => a.userId === userId);
+    const excludeCredentials = userAuthenticators.map(a => ({
+      id: a.credentialID,
+      type: 'public-key' as const,
+      transports: a.transports as any,
+    }));
+
+    const options = await generateRegistrationOptions({
+      rpName,
+      rpID: reqRpID,
+      userID: isoUint8Array.fromUTF8String(userId),
+      userName: email,
+      userDisplayName: displayName || email,
+      attestationType: 'none',
+      excludeCredentials,
+      authenticatorSelection: {
+        residentKey: 'preferred',
+        userVerification: 'preferred',
+      },
+    });
+
+    authChallenges.set(userId, {
+      challenge: options.challenge,
+      type: 'registration',
+      userId,
+      email,
+      timestamp: Date.now()
+    });
+
+    res.json(options);
+  } catch (error: any) {
+    console.error("Error in generate-registration-options:", error);
+    res.status(500).json({ error: error?.message || "Failed to generate registration options" });
+  }
+});
+
+// Registration: 2. Verify registration response
+app.post('/api/auth/verify-registration', async (req, res) => {
+  try {
+    const { body, userId, email, displayName } = req.body || {};
+    if (!body || !userId) {
+      return res.status(400).json({ error: "Missing registration payload or userId" });
+    }
+
+    const challengeData = authChallenges.get(userId);
+    if (!challengeData || challengeData.type !== 'registration') {
+      return res.status(400).json({ error: "Registration session expired or not found. Please try again." });
+    }
+
+    const { origin: reqOrigin, rpID: reqRpID } = getRequestAuthContext(req);
+
     const verification = await verifyRegistrationResponse({
       response: body,
-      expectedChallenge,
+      expectedChallenge: challengeData.challenge,
       expectedOrigin: reqOrigin,
       expectedRPID: reqRpID,
       requireUserVerification: false,
@@ -712,119 +1004,195 @@ app.post('/api/auth/verify-registration', async (req, res) => {
     if (verification.verified && verification.registrationInfo) {
       const { credential, credentialDeviceType, credentialBackedUp } = verification.registrationInfo as any;
 
-      const newAuthenticator = {
+      const newAuth: StoredAuthenticator = {
         credentialID: credential.id,
         credentialPublicKey: isoUint8Array.toHex(credential.publicKey),
         counter: credential.counter,
         credentialDeviceType,
         credentialBackedUp,
         userId,
-        transports: (body as any).response.transports,
+        email: email || challengeData.email || '',
+        displayName: displayName || '',
+        transports: (body as any)?.response?.transports,
+        createdAt: new Date().toISOString()
       };
 
-      await db.collection('authenticators').doc(credential.id).set(newAuthenticator);
-      await db.collection('challenges').doc(userId).delete();
-      
+      const all = loadAuthenticators();
+      const existingIdx = all.findIndex(a => a.credentialID === credential.id);
+      if (existingIdx >= 0) {
+        all[existingIdx] = newAuth;
+      } else {
+        all.push(newAuth);
+      }
+      saveAuthenticators(all);
+
+      authChallenges.delete(userId);
+
+      // Best effort mirror to Firestore if admin credentials exist
+      if (db) {
+        try {
+          await db.collection('authenticators').doc(credential.id).set(newAuth);
+        } catch (e) {
+          // Ignored if permissions are restricted in development
+        }
+      }
+
       res.json({ verified: true });
     } else {
-      res.status(400).json({ error: "Verification failed" });
+      res.status(400).json({ error: "Verification failed. Could not verify biometric credential." });
     }
   } catch (error: any) {
-    console.error(error);
-    res.status(400).json({ error: error.message });
+    console.error("Error in verify-registration:", error);
+    res.status(400).json({ error: error?.message || "Biometric registration verification error" });
   }
 });
 
-// Authentication
+// Authentication: 1. Generate authentication options
 app.post('/api/auth/generate-authentication-options', async (req, res) => {
-  const { email } = req.body;
-  if (!db) return res.status(500).json({ error: "DB not initialized" });
+  try {
+    const { email } = req.body || {};
+    if (!email) {
+      return res.status(400).json({ error: "Email is required to prepare biometric sign-in" });
+    }
 
-  const { origin: reqOrigin, rpID: reqRpID } = getRequestAuthContext(req);
+    const { origin: reqOrigin, rpID: reqRpID } = getRequestAuthContext(req);
 
-  // Find user by email
-  const userSnap = await db.collection('users').where('email', '==', email).limit(1).get();
-  if (userSnap.empty) return res.status(404).json({ error: "User not found" });
-  
-  const userId = userSnap.docs[0].id;
-  const authenticatorsSnap = await db.collection('authenticators').where('userId', '==', userId).get();
-  
-  const allowCredentials = authenticatorsSnap.docs.map(doc => ({
-    id: doc.data().credentialID,
-    type: 'public-key' as const,
-    transports: doc.data().transports,
-  }));
+    const all = loadAuthenticators();
+    const userAuthenticators = all.filter(a => a.email && a.email.toLowerCase() === email.trim().toLowerCase());
 
-  const options = await generateAuthenticationOptions({
-    rpID: reqRpID,
-    allowCredentials,
-    userVerification: 'preferred',
-  });
+    if (userAuthenticators.length === 0) {
+      return res.status(404).json({ error: "No biometric credentials found for this account. Please sign in with your email and password first, then enable Biometrics in Settings." });
+    }
 
-  await db.collection('challenges').doc(userId).set({
-    challenge: options.challenge,
-    type: 'authentication',
-    timestamp: FieldValue.serverTimestamp()
-  });
+    const userId = userAuthenticators[0].userId;
 
-  res.json({ options, userId });
+    const options = await generateAuthenticationOptions({
+      rpID: reqRpID,
+      allowCredentials: userAuthenticators.map(a => ({
+        id: a.credentialID,
+        type: 'public-key' as const,
+        transports: a.transports as any,
+      })),
+      userVerification: 'preferred',
+    });
+
+    authChallenges.set(userId, {
+      challenge: options.challenge,
+      type: 'authentication',
+      userId,
+      email,
+      timestamp: Date.now()
+    });
+
+    res.json({ options, userId });
+  } catch (error: any) {
+    console.error("Error in generate-authentication-options:", error);
+    res.status(500).json({ error: error?.message || "Failed to generate authentication options" });
+  }
 });
 
+// Authentication: 2. Verify authentication response
 app.post('/api/auth/verify-authentication', async (req, res) => {
-  const { body, userId } = req.body;
-  if (!db) return res.status(500).json({ error: "DB not initialized" });
-
-  const { origin: reqOrigin, rpID: reqRpID } = getRequestAuthContext(req);
-
-  const challengeSnap = await db.collection('challenges').doc(userId).get();
-  const expectedChallenge = challengeSnap.data()?.challenge;
-
-  const authSnap = await db.collection('authenticators').doc(body.id).get();
-  if (!authSnap.exists) return res.status(404).json({ error: "Authenticator not found" });
-  
-  const authenticator = authSnap.data();
-
   try {
+    const { body, userId } = req.body || {};
+    if (!body || !userId) {
+      return res.status(400).json({ error: "Missing authentication payload or userId" });
+    }
+
+    const challengeData = authChallenges.get(userId);
+    if (!challengeData || challengeData.type !== 'authentication') {
+      return res.status(400).json({ error: "Authentication challenge expired. Please try again." });
+    }
+
+    const all = loadAuthenticators();
+    const authenticator = all.find(a => a.credentialID === body.id);
+    if (!authenticator) {
+      return res.status(404).json({ error: "Biometric key not found. Please re-register in Settings." });
+    }
+
+    const { origin: reqOrigin, rpID: reqRpID } = getRequestAuthContext(req);
+
     const verification = await verifyAuthenticationResponse({
       response: body,
-      expectedChallenge,
+      expectedChallenge: challengeData.challenge,
       expectedOrigin: reqOrigin,
       expectedRPID: reqRpID,
       credential: {
-        id: authenticator?.credentialID,
-        publicKey: isoUint8Array.fromHex(authenticator?.credentialPublicKey),
-        counter: authenticator?.counter as any,
-        transports: authenticator?.transports,
+        id: authenticator.credentialID,
+        publicKey: isoUint8Array.fromHex(authenticator.credentialPublicKey),
+        counter: authenticator.counter,
+        transports: authenticator.transports as any,
       },
       requireUserVerification: false,
     });
 
     if (verification.verified) {
-      // Update counter
-      await db.collection('authenticators').doc(body.id).update({
-        counter: verification.authenticationInfo.newCounter,
+      authenticator.counter = verification.authenticationInfo.newCounter;
+      saveAuthenticators(all);
+      authChallenges.delete(userId);
+
+      // Attempt custom token creation if Firebase Admin credential exists
+      let customToken: string | null = null;
+      try {
+        if (process.env.FIREBASE_SERVICE_ACCOUNT_KEY) {
+          customToken = await getAuth().createCustomToken(userId);
+        }
+      } catch (tokenErr) {
+        console.warn("Custom token generation omitted (requires Firebase service account):", tokenErr);
+      }
+
+      res.json({ 
+        verified: true, 
+        userId,
+        email: authenticator.email,
+        customToken 
       });
-      await db.collection('challenges').doc(userId).delete();
-      
-      // Generate a custom token for Firebase login
-      const customToken = await getAuth().createCustomToken(userId);
-      res.json({ verified: true, customToken });
     } else {
-      res.status(400).json({ error: "Verification failed" });
+      res.status(400).json({ error: "Biometric authentication failed. The signature could not be verified." });
     }
   } catch (error: any) {
-    console.error(error);
-    res.status(400).json({ error: error.message });
+    console.error("Error in verify-authentication:", error);
+    res.status(400).json({ error: error?.message || "Biometric authentication error" });
   }
 });
 
 async function startServer() {
   const distPath = path.join(process.cwd(), 'dist');
-  const isProduction = process.env.NODE_ENV === "production" || fs.existsSync(path.join(distPath, 'index.html'));
+  const isProduction = process.env.NODE_ENV === "production";
+
+  // Explicitly serve Service Worker and related scripts with application/javascript MIME type
+  app.get('/sw.js', (req, res) => {
+    const swDist = path.join(process.cwd(), 'dist', 'sw.js');
+    if (fs.existsSync(swDist)) {
+      res.setHeader('Content-Type', 'application/javascript');
+      return res.sendFile(swDist);
+    }
+    res.setHeader('Content-Type', 'application/javascript');
+    res.send('// Dev Service Worker\nself.addEventListener("install", () => self.skipWaiting());\nself.addEventListener("activate", (e) => e.waitUntil(self.clients.claim()));\n');
+  });
+
+  app.get(/^\/workbox-[a-f0-9]+\.js$/, (req, res) => {
+    const wbDist = path.join(process.cwd(), 'dist', req.path.replace(/^\//, ''));
+    if (fs.existsSync(wbDist)) {
+      res.setHeader('Content-Type', 'application/javascript');
+      return res.sendFile(wbDist);
+    }
+    res.setHeader('Content-Type', 'application/javascript');
+    res.send('// workbox dev stub\n');
+  });
+
+  // Global API error handler
+  app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+    console.error("API Error:", err);
+    if (res.headersSent) {
+      return next(err);
+    }
+    res.status(err.status || 500).json({ error: err.message || "An unexpected error occurred" });
+  });
 
   if (!isProduction) {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: { middlewareMode: true, hmr: false },
       appType: "spa",
     });
     app.use(vite.middlewares);
