@@ -1458,7 +1458,7 @@ export default function ActiveWorkspace({ haul, onClose, customFolders = [], onU
     } catch(err) { console.error(err); }
   };
 
-  const compressImage = (file: File, maxDimension = 800, quality = 0.6): Promise<string> => {
+  const compressImage = (file: File, maxDimension = 1600, quality = 0.85): Promise<string> => {
     return new Promise((resolve) => {
       const reader = new FileReader();
       reader.readAsDataURL(file);

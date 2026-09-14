@@ -516,30 +516,32 @@ You are scanning truck stop and logistics receipts (Pilot Flying J, Loves, TA, P
 
 CRITICAL MANDATE FOR DIESEL AND DEF (DIESEL EXHAUST FLUID):
 Truck stop receipts frequently list TWO separate fluid purchases on a single receipt:
-1. Diesel Fuel (larger volume, e.g., 30-150+ gallons, higher total cost)
-2. DEF / Diesel Exhaust Fluid (smaller volume, e.g., 2-15 gallons, lower total cost, often labeled as "DEF BULK", "DEF PUMP", "BlueDEF", "D.E.F.", "DEF GALS", "DEF-B", "PUMP DEF", or "Blue DEF").
+1. Diesel Fuel (larger volume, e.g., 30-150+ gallons, higher total cost, e.g., "1 Truck Diesel" or "Diesel")
+2. DEF / Diesel Exhaust Fluid (smaller volume, e.g., 2-15 gallons, lower total cost, e.g., "1 DEF Fuel Item", "DEF BULK", "DEF PUMP", "BlueDEF", "D.E.F.", "DEF GALS", "DEF-B", "PUMP DEF", or "Blue DEF").
 
 You MUST inspect the receipt line-by-line for any secondary line items or separate totals representing DEF.
+Even if a line is named "DEF Fuel Item" or similar and contains the word "Fuel", it is strictly Diesel Exhaust Fluid and MUST be separated into 'defItem'. It is NOT regular fuel.
+
 If BOTH Diesel Fuel and DEF are present on the receipt:
 - DO NOT combine them into a single total under the top-level 'amount' or 'gallons'.
 - Put ONLY the Diesel Fuel portion in the top-level object:
   - category = "Fuel"
-  - amount = Diesel Fuel total cost
-  - gallons = Diesel Fuel gallons
-  - pricePerGallon = Diesel Fuel price per gallon
+  - amount = Diesel Fuel total cost (e.g., 307.76)
+  - gallons = Diesel Fuel gallons (e.g., 47.648)
+  - pricePerGallon = Diesel Fuel price per gallon (e.g., 6.459)
 - Put ONLY the DEF portion in the 'defItem' object:
   - category = "DEF"
-  - amount = DEF total cost
-  - gallons = DEF gallons
-  - pricePerGallon = DEF price per gallon
+  - amount = DEF total cost (e.g., 12.74)
+  - gallons = DEF gallons (e.g., 2.655)
+  - pricePerGallon = DEF price per gallon (e.g., 4.799)
   - vendor = Same as top-level vendor or specifically the truck stop name
   - timestamp = Same as receipt date
 
-If the receipt lists a combined grand total but separates the line items, subtract the DEF portion from the Fuel portion so they do not overlap.
+If the receipt lists a combined grand total (like Subtotal: 320.50, Total: 320.50), DO NOT put that combined grand total in the top-level 'amount'. Instead, the top-level 'amount' MUST be exactly the Diesel Fuel portion (307.76), and the 'defItem.amount' MUST be exactly the DEF portion (12.74). They must be completely separate and sum up to the grand total.
 Under no circumstances should the DEF amount be included in the top-level amount or gallons if defItem is present.
 
-If the receipt ONLY contains Diesel Fuel, set category to "Fuel" and set 'defItem' to null.
-If the receipt ONLY contains DEF, set category to "DEF" and set 'defItem' to null.
+If the receipt ONLY contains Diesel Fuel, set category to "Fuel" and do not include the 'defItem' property in the JSON.
+If the receipt ONLY contains DEF, set category to "DEF" and do not include the 'defItem' property in the JSON.
 If the category is 'Misc' (Other/Miscellaneous), please identify the purpose/use of the expense (e.g., 'shower', 'charity', 'hotel', 'parking') and return it in the 'purpose' field.
 
 Format strictly as JSON matching the schema.` }
@@ -559,7 +561,6 @@ Format strictly as JSON matching the schema.` }
             purpose: { type: Type.STRING },
             defItem: {
               type: Type.OBJECT,
-              nullable: true,
               properties: {
                 vendor: { type: Type.STRING },
                 timestamp: { type: Type.STRING },
@@ -577,6 +578,9 @@ Format strictly as JSON matching the schema.` }
     });
 
     const outputText = response.text;
+    console.log("=== RAW GEMINI OCR OUTPUT ===");
+    console.log(outputText);
+    console.log("=============================");
     const parsed = JSON.parse(outputText!);
     
     res.json(parsed);
