@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef } from 'react';
 import { getUpdatesSince } from '../data/updates';
 
-export function useVersionMonitor() {
+export function useVersionMonitor(userUid?: string) {
   const [updateAvailable, setUpdateAvailable] = useState(false);
   const [currentVersion, setCurrentVersion] = useState<string | null>(null);
   const [latestServerVersion, setLatestServerVersion] = useState<string | null>(null);
@@ -43,7 +43,7 @@ export function useVersionMonitor() {
         }
       }
     }
-  }, [clientVersion]);
+  }, [clientVersion, userUid]);
 
   const acknowledgeJustUpdated = () => {
     setJustUpdated(false);

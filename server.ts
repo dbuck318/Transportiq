@@ -540,15 +540,16 @@ Format strictly as JSON matching the schema.` }
             purpose: { type: Type.STRING },
             defItem: {
               type: Type.OBJECT,
+              nullable: true,
               properties: {
                 vendor: { type: Type.STRING },
                 timestamp: { type: Type.STRING },
-                category: { type: Type.STRING, enum: ["DEF"] },
+                category: { type: Type.STRING },
                 amount: { type: Type.NUMBER },
                 gallons: { type: Type.NUMBER },
                 pricePerGallon: { type: Type.NUMBER }
               },
-              required: ["vendor", "amount", "category"]
+              required: ["amount"]
             }
           },
           required: ["vendor", "amount", "category"]

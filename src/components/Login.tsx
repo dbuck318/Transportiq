@@ -61,6 +61,10 @@ export default function Login() {
         lastSeenVersion: appVersion
       });
     } else {
+      const userData = userSnap.data();
+      if (userData?.lastSeenVersion) {
+        localStorage.setItem('last_seen_version', userData.lastSeenVersion);
+      }
       await setDoc(userRef, { lastLogin: serverTimestamp(), lastActive: serverTimestamp() }, { merge: true });
     }
   };

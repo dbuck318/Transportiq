@@ -304,10 +304,22 @@ export default function App() {
     setFolderToDelete(null);
   };
 
-  const { updateAvailable, currentVersion, latestServerVersion, dismissUpdate, markVersionUpdated, justUpdated, acknowledgeJustUpdated, lastSeenVersion } = useVersionMonitor();
+  const { updateAvailable, currentVersion, latestServerVersion, dismissUpdate, markVersionUpdated, justUpdated, acknowledgeJustUpdated, lastSeenVersion } = useVersionMonitor(user?.uid);
 
   const [isAutoUpdating, setIsAutoUpdating] = useState(false);
   const [showUpdatePopup, setShowUpdatePopup] = useState(false);
+
+  const handleAcknowledgeUpdate = async () => {
+    acknowledgeJustUpdated();
+    if (auth.currentUser) {
+      try {
+        const userRef = doc(db, 'users', auth.currentUser.uid);
+        await updateDoc(userRef, { lastSeenVersion: currentVersion || 'v1.5.77' });
+      } catch (err) {
+        console.warn("Failed to sync lastSeenVersion to Firestore:", err);
+      }
+    }
+  };
 
   useEffect(() => {
     // Only show update modal for existing users if there are new updates available
@@ -435,6 +447,14 @@ export default function App() {
         unsubProfile = onSnapshot(userRef, (userSnap) => {
           if (userSnap.exists()) {
             const data = userSnap.data();
+
+            // Sync lastSeenVersion
+            if (data.lastSeenVersion) {
+              const localLastSeen = localStorage.getItem('last_seen_version');
+              if (!localLastSeen) {
+                localStorage.setItem('last_seen_version', data.lastSeenVersion);
+              }
+            }
 
             // Sync customFolders
             if (Array.isArray(data.customFolders)) {
@@ -1485,7 +1505,7 @@ export default function App() {
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-[10000] flex items-center justify-center p-4"
-              onClick={acknowledgeJustUpdated}
+              onClick={handleAcknowledgeUpdate}
             >
               <motion.div 
                 initial={{ scale: 0.95, y: 10 }}
@@ -1505,7 +1525,7 @@ export default function App() {
                     </div>
                   </div>
                   <button 
-                    onClick={acknowledgeJustUpdated}
+                    onClick={handleAcknowledgeUpdate}
                     className="p-1.5 hover:bg-slate-50 text-slate-400 hover:text-slate-600 rounded-lg transition-colors"
                   >
                     <X className="w-5 h-5" />
@@ -1556,7 +1576,7 @@ export default function App() {
                 <div className="flex gap-3">
                   <button 
                     type="button"
-                    onClick={acknowledgeJustUpdated}
+                    onClick={handleAcknowledgeUpdate}
                     className="w-full py-3 px-4 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-sm font-semibold active:scale-[0.98] transition-all shadow-sm shadow-blue-100 flex items-center justify-center gap-2"
                   >
                     Awesome, Let's Go!

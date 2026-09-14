@@ -1542,10 +1542,20 @@ export default function ActiveWorkspace({ haul, onClose, customFolders = [], onU
         amount: Number(parsed.amount || 0)
       });
 
+      // Normalize and validate category to prevent Firestore Security Rules errors
+      const allowedCategories = ['Fuel', 'DEF', 'Permits', 'Maintenance', 'Maintenance/DEF', 'Food', 'Misc', 'Toll'];
+      let mappedCategory = parsed.category || 'Misc';
+      if (mappedCategory === 'Toll') {
+        mappedCategory = 'Permits';
+      }
+      if (!allowedCategories.includes(mappedCategory)) {
+        mappedCategory = 'Misc';
+      }
+
       // 5. Create core corresponding expense record
       await addDoc(collection(db, 'hauls', haul.id, 'expenses'), {
         haulId: haul.id,
-        category: (parsed.category === 'Toll' ? 'Permits' : parsed.category) || 'Misc',
+        category: mappedCategory,
         amount: Number(parsed.amount || 0),
         ownerId: auth.currentUser.uid,
         timestamp: parsed.timestamp || new Date().toISOString(),
