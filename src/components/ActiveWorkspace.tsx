@@ -1436,15 +1436,18 @@ export default function ActiveWorkspace({ haul, onClose, customFolders = [], onU
   const addManualExpense = async (category: string) => {
     if (!haul?.id || !auth.currentUser) return;
     try {
-      await addDoc(collection(db, 'hauls', haul.id, 'expenses'), {
+      const expData: any = {
         category,
         amount: 0,
         vendor: '',
         haulId: haul.id,
         ownerId: auth.currentUser.uid,
-        timestamp: new Date().toISOString(),
-        purpose: category === 'Misc' ? '' : undefined
-      });
+        timestamp: new Date().toISOString()
+      };
+      if (category === 'Misc') {
+        expData.purpose = '';
+      }
+      await addDoc(collection(db, 'hauls', haul.id, 'expenses'), expData);
     } catch(err) { console.error(err); }
   };
 
@@ -1532,12 +1535,33 @@ export default function ActiveWorkspace({ haul, onClose, customFolders = [], onU
 
       const parsed = await response.json();
 
+      const getValidISOString = (dateStr: any) => {
+        if (!dateStr) return new Date().toISOString();
+        const d = new Date(dateStr);
+        if (isNaN(d.getTime())) {
+          return new Date().toISOString();
+        }
+        return d.toISOString();
+      };
+
+      const cleanObject = (obj: any) => {
+        const res: any = {};
+        Object.keys(obj).forEach(k => {
+          if (obj[k] !== undefined) {
+            res[k] = obj[k];
+          }
+        });
+        return res;
+      };
+
+      const validTimestamp = getValidISOString(parsed.timestamp);
+
       // 4. Create verified scanned receipt record
       await addDoc(collection(db, 'hauls', haul.id, 'scannedReceipts'), {
         fileName: file.name || 'receipt.jpg',
         fileType: file.type || 'image/jpeg',
         dataUrl: dataUrl,
-        timestamp: parsed.timestamp || new Date().toISOString(),
+        timestamp: validTimestamp,
         vendor: parsed.vendor || 'Unknown Vendor',
         amount: Number(parsed.amount || 0)
       });
@@ -1553,30 +1577,33 @@ export default function ActiveWorkspace({ haul, onClose, customFolders = [], onU
       }
 
       // 5. Create core corresponding expense record
-      await addDoc(collection(db, 'hauls', haul.id, 'expenses'), {
+      const mainExpenseDoc = cleanObject({
         haulId: haul.id,
         category: mappedCategory,
         amount: Number(parsed.amount || 0),
         ownerId: auth.currentUser.uid,
-        timestamp: parsed.timestamp || new Date().toISOString(),
+        timestamp: validTimestamp,
         vendor: parsed.vendor || 'Unknown Vendor',
         gallons: parsed.gallons ? Number(parsed.gallons) : undefined,
         pricePerGallon: parsed.pricePerGallon ? Number(parsed.pricePerGallon) : undefined,
         purpose: parsed.purpose || undefined
       });
+      await addDoc(collection(db, 'hauls', haul.id, 'expenses'), mainExpenseDoc);
 
       // 6. Support double-item split transaction mapping for DEF
       if (parsed.defItem) {
-        await addDoc(collection(db, 'hauls', haul.id, 'expenses'), {
+        const defTimestamp = getValidISOString(parsed.defItem.timestamp || parsed.timestamp);
+        const defExpenseDoc = cleanObject({
           haulId: haul.id,
           category: 'DEF',
           amount: Number(parsed.defItem.amount || 0),
           ownerId: auth.currentUser.uid,
-          timestamp: parsed.defItem.timestamp || parsed.timestamp || new Date().toISOString(),
+          timestamp: defTimestamp,
           vendor: parsed.defItem.vendor || parsed.vendor || 'Unknown Vendor',
           gallons: parsed.defItem.gallons ? Number(parsed.defItem.gallons) : undefined,
           pricePerGallon: parsed.defItem.pricePerGallon ? Number(parsed.defItem.pricePerGallon) : undefined
         });
+        await addDoc(collection(db, 'hauls', haul.id, 'expenses'), defExpenseDoc);
       }
 
     } catch (err: any) {
