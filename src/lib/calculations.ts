@@ -111,8 +111,15 @@ export function calculateTotals(
   const itemizedMiscExpenses = expenses
     .filter(e => e.category === 'Misc')
     .reduce((acc, exp) => {
-      const vendor = exp.vendor || 'Other';
-      acc[vendor] = (acc[vendor] || 0) + Number(exp.amount || 0);
+      let label = exp.purpose || exp.vendor || 'Other';
+      if (exp.purpose && exp.purpose.trim() !== '') {
+        const trimmed = exp.purpose.trim();
+        label = trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
+      } else if (exp.vendor && exp.vendor.trim() !== '') {
+        const trimmed = exp.vendor.trim();
+        label = trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
+      }
+      acc[label] = (acc[label] || 0) + Number(exp.amount || 0);
       return acc;
     }, {} as Record<string, number>);
 

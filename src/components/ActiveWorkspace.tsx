@@ -3158,41 +3158,6 @@ export default function ActiveWorkspace({ haul, onClose, customFolders = [], onU
                                 />
                               </div>
                             )}
-                            <div className="flex flex-col">
-                              <label className="text-[10px] font-bold uppercase text-slate-400 mb-1">Amount</label>
-                              <div className="flex items-center gap-1">
-                                <span className="text-sm font-semibold text-slate-900">$</span>
-                                <ExpenseAmountInput 
-                                  amount={exp.amount}
-                                  onChange={(val) => {
-                                    const updates: any = { amount: val };
-                                    if ((exp.category === 'Fuel' || exp.category === 'DEF') && exp.gallons && Number(exp.gallons) > 0) {
-                                      updates.pricePerGallon = Number((val / exp.gallons).toFixed(3));
-                                    }
-                                    updateExpense(exp.id, updates);
-                                  }}
-                                />
-                              </div>
-                            </div>
-                            {(exp.category === 'Fuel' || exp.category === 'DEF') && (
-                              <div className="flex flex-col">
-                                <label className="text-[10px] font-bold uppercase text-slate-400 mb-1">Gallons</label>
-                                <input 
-                                  type="number"
-                                  value={exp.gallons || ''} 
-                                  onChange={(e) => {
-                                    const g = Number(e.target.value);
-                                    const updates: any = { gallons: g };
-                                    if ((exp.category === 'Fuel' || exp.category === 'DEF') && exp.amount && exp.amount > 0 && g > 0) {
-                                      updates.pricePerGallon = Number((exp.amount / g).toFixed(3));
-                                    }
-                                    updateExpense(exp.id, updates);
-                                  }}
-                                  className="text-sm font-semibold text-slate-900 bg-transparent focus:outline-none w-full border-b border-transparent focus:border-blue-200"
-                                  placeholder="0.00"
-                                />
-                              </div>
-                            )}
                             {(exp.category === 'Fuel' || exp.category === 'DEF') && (
                               <div className="flex flex-col">
                                 <label className="text-[10px] font-bold uppercase text-slate-400 mb-1">Price/Gal</label>
@@ -3216,6 +3181,41 @@ export default function ActiveWorkspace({ haul, onClose, customFolders = [], onU
                                 </div>
                               </div>
                             )}
+                            {(exp.category === 'Fuel' || exp.category === 'DEF') && (
+                              <div className="flex flex-col">
+                                <label className="text-[10px] font-bold uppercase text-slate-400 mb-1">Gallons</label>
+                                <input 
+                                  type="number"
+                                  value={exp.gallons || ''} 
+                                  onChange={(e) => {
+                                    const g = Number(e.target.value);
+                                    const updates: any = { gallons: g };
+                                    if ((exp.category === 'Fuel' || exp.category === 'DEF') && exp.amount && exp.amount > 0 && g > 0) {
+                                      updates.pricePerGallon = Number((exp.amount / g).toFixed(3));
+                                    }
+                                    updateExpense(exp.id, updates);
+                                  }}
+                                  className="text-sm font-semibold text-slate-900 bg-transparent focus:outline-none w-full border-b border-transparent focus:border-blue-200"
+                                  placeholder="0.00"
+                                />
+                              </div>
+                            )}
+                            <div className="flex flex-col">
+                              <label className="text-[10px] font-bold uppercase text-slate-400 mb-1">Amount</label>
+                              <div className="flex items-center gap-1">
+                                <span className="text-sm font-semibold text-slate-900">$</span>
+                                <ExpenseAmountInput 
+                                  amount={exp.amount}
+                                  onChange={(val) => {
+                                    const updates: any = { amount: val };
+                                    if ((exp.category === 'Fuel' || exp.category === 'DEF') && exp.gallons && Number(exp.gallons) > 0) {
+                                      updates.pricePerGallon = Number((val / exp.gallons).toFixed(3));
+                                    }
+                                    updateExpense(exp.id, updates);
+                                  }}
+                                />
+                              </div>
+                            </div>
                           </div>
                         </div>
                         <div className="flex items-center gap-4 ml-4">
@@ -3408,9 +3408,9 @@ export default function ActiveWorkspace({ haul, onClose, customFolders = [], onU
                       {stats.itemizedMiscExpenses && Object.entries(stats.itemizedMiscExpenses).length > 0 && (
                         <div className="space-y-1 mt-2">
                           <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">Other Expenses</span>
-                          {Object.entries(stats.itemizedMiscExpenses).map(([vendor, amount]) => (
-                            <div key={vendor} className="flex justify-between items-center text-xs">
-                              <span className="text-slate-500">{vendor}</span>
+                          {Object.entries(stats.itemizedMiscExpenses).map(([label, amount]) => (
+                            <div key={label} className="flex justify-between items-center text-xs">
+                              <span className="text-slate-500">{label}</span>
                               <span className="font-semibold text-slate-700">${Number(amount).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
                             </div>
                           ))}
