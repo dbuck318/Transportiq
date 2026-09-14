@@ -297,7 +297,7 @@ Direct reply to this email will respond to: ${trimmedEmail}
     }
 
     // 2. Mirror to Firestore if available
-    if (db) {
+    if (db && process.env.FIREBASE_SERVICE_ACCOUNT_KEY) {
       try {
         await db.collection('feedbacks').add({
           email: trimmedEmail,
@@ -412,7 +412,7 @@ app.post("/api/state-fuel-prices", async (req, res) => {
           const routePrompt = `You are a logistics routing coordinator. Identify the standard highway driving route from "${origin}" to "${destination}". Extract the exact sequence of 2-letter US state codes traversed along this route in order (including origin state and destination state). E.g. from Goshen, IN to Cleburne, TX, the traversed states are: ["IN", "IL", "MO", "AR", "TX"]. Format the output strictly as a JSON array of 2-letter state codes, e.g. ["IN", "IL", "MO", "AR", "TX"]. Do not include markdown formatting or backticks.`;
 
           const routeResponse = await getAI().models.generateContent({
-            model: "gemini-3.7-flash",
+            model: "gemini-3.8-flash",
             contents: routePrompt,
             config: {
               responseMimeType: "application/json"
@@ -450,7 +450,7 @@ app.post("/api/state-fuel-prices", async (req, res) => {
         WARNING: Do not return historical 2022 data. You MUST return today's prices (around $3.00-$4.50 range). Format the output strictly as a JSON object where the keys are the 2-letter state abbreviations and the values are objects with "gas" and "diesel" numeric keys. Example: {"TX": {"gas": 2.99, "diesel": 3.89}}. Do not include any other text except the JSON, not even markdown backticks.`;
         
         const priceResponse = await getAI().models.generateContent({
-          model: "gemini-3.7-flash",
+          model: "gemini-3.8-flash",
           contents: pricePrompt,
           config: {
             tools: [{ googleSearch: {} }] // Use search grounding to get precise, real-time AAA prices
@@ -507,7 +507,7 @@ app.post("/api/parse-receipt", async (req, res) => {
     if (!imageBase64) return res.status(400).json({ error: "Missing image" });
 
     const response = await getAI().models.generateContent({
-      model: "gemini-3.7-flash",
+      model: "gemini-3.8-flash",
       contents: {
         parts: [
           { inlineData: { data: imageBase64, mimeType } },
@@ -523,8 +523,8 @@ app.post("/api/parse-receipt", async (req, res) => {
             timestamp: { type: Type.STRING },
             category: { type: Type.STRING, enum: ["Fuel", "DEF", "Maintenance", "Food", "Misc", "Toll"] },
             amount: { type: Type.NUMBER },
-            gallons: { type: Type.NUMBER, nullable: true },
-            pricePerGallon: { type: Type.NUMBER, nullable: true },
+            gallons: { type: Type.NUMBER },
+            pricePerGallon: { type: Type.NUMBER },
             defItem: {
               type: Type.OBJECT,
               properties: {
@@ -532,11 +532,10 @@ app.post("/api/parse-receipt", async (req, res) => {
                 timestamp: { type: Type.STRING },
                 category: { type: Type.STRING, enum: ["DEF"] },
                 amount: { type: Type.NUMBER },
-                gallons: { type: Type.NUMBER, nullable: true },
-                pricePerGallon: { type: Type.NUMBER, nullable: true }
+                gallons: { type: Type.NUMBER },
+                pricePerGallon: { type: Type.NUMBER }
               },
-              required: ["vendor", "amount", "category"],
-              nullable: true
+              required: ["vendor", "amount", "category"]
             }
           },
           required: ["vendor", "amount", "category"]
@@ -805,6 +804,10 @@ app.get("/api/version", (req, res) => {
 
 app.get("/api/community-hauls-summary", async (req, res) => {
   if (!db) return res.status(500).json({ error: "DB not initialized" });
+  if (!process.env.FIREBASE_SERVICE_ACCOUNT_KEY) {
+    // Gracefully handle the absence of service account key in development/preview to prevent permission logs
+    return res.json({ hauls: [], warning: "Admin DB credentials not configured in environment" });
+  }
   try {
     const usersSnap = await db.collection('users').get();
     const userProfiles: Record<string, any> = {};
@@ -852,6 +855,131 @@ app.get("/api/community-hauls-summary", async (req, res) => {
   } catch (error: any) {
     console.warn("Could not fetch community hauls summary due to permission/credential limits. Gracefully continuing with an empty list.", error.message || error);
     res.json({ hauls: [], warning: "Missing or insufficient DB permissions on server" });
+  }
+});
+
+// --- AI Continuous Learning Calibration Model Target Endpoint ---
+app.post("/api/calibrated-target", async (req, res) => {
+  try {
+    const { userProfile, localHaul, traversedStates, baseExpectedMpg, peerHauls: clientProvidedPeerHauls } = req.body || {};
+    if (!userProfile || !localHaul) {
+      return res.status(400).json({ error: "Missing userProfile or localHaul parameters" });
+    }
+
+    // 1. Fetch community completed hauls data (from other registered users or client provided payload)
+    let peerHauls: any[] = Array.isArray(clientProvidedPeerHauls) ? clientProvidedPeerHauls : [];
+    
+    if (peerHauls.length === 0 && db && process.env.FIREBASE_SERVICE_ACCOUNT_KEY) {
+      try {
+        const usersSnap = await db.collection('users').get();
+        const userProfiles: Record<string, any> = {};
+        usersSnap.forEach((uDoc: any) => {
+          userProfiles[uDoc.id] = uDoc.data();
+        });
+
+        const snap = await db.collection('hauls')
+          .where('status', 'in', ['Completed', 'Finalized'])
+          .get();
+          
+        snap.forEach((docSnap: any) => {
+          const data = docSnap.data();
+          const ownerId = data.ownerId || '';
+          
+          // Exclude the active user's own data from peer calculations to prevent circular reference
+          if (ownerId && ownerId === localHaul.ownerId) {
+            return;
+          }
+          
+          const profile = userProfiles[ownerId] || {};
+          const loadedMpg = Number(data.loadedMpg || data.milesPerGallon || 0);
+          if (loadedMpg > 0) {
+            peerHauls.push({
+              loadedMpg,
+              scaleWeight: Number(data.scaleWeight || 0),
+              grossWeight: Number(data.grossWeight || 0),
+              unitType: data.unitType || '',
+              unitLength: Number(data.unitLength || 0),
+              axles: Number(data.axles || 0),
+              powerUnitYear: profile.powerUnitYear ? Number(profile.powerUnitYear) : '',
+              powerUnitMake: profile.powerUnitMake || '',
+              powerUnitModel: profile.powerUnitModel || '',
+              engineType: profile.engineType || '',
+              duallyOrSrw: profile.duallyOrSrw || '',
+              drivetrain: profile.drivetrain || '',
+              powerUnitScaleWeight: profile.powerUnitScaleWeight ? Number(profile.powerUnitScaleWeight) : '',
+              fuelType: profile.fuelType || ''
+            });
+          }
+        });
+      } catch (e) {
+        console.warn("Could not query peer hauls for calibration, proceeding with empty list", e);
+      }
+    }
+
+    // 2. Instruct Gemini to act as a regression/calibration ML model
+    const prompt = `You are a machine learning calibration model for the "Transport Genius" logistics platform, optimizing fuel performance targets for class 5-6 hotshot and RV towing operators.
+    
+Your goal is to output a continuously calibrated, highly accurate target MPG (Miles Per Gallon) for a specific active haul configuration by fitting a baseline expected MPG against empirical real-world results from other registered peer operators.
+
+---
+TARGET CONFIGURATION TO CALIBRATE:
+- Power Unit: ${userProfile.powerUnitYear || 'N/A'} ${userProfile.powerUnitMake || 'N/A'} ${userProfile.powerUnitModel || 'N/A'} (${userProfile.engineType || 'N/A'}, ${userProfile.duallyOrSrw || 'N/A'}, ${userProfile.drivetrain || 'N/A'})
+- Towable Unit Type: ${localHaul.unitType || 'N/A'} (Length: ${localHaul.unitLength || 0} ft, Axles: ${localHaul.axles || 2})
+- Weight Details: Scale Weight = ${localHaul.scaleWeight || 'N/A'} lbs, Gross Weight = ${localHaul.grossWeight || 'N/A'} lbs
+- Traversed States: ${JSON.stringify(traversedStates || [])}
+- Physical Formula Expected MPG: ${baseExpectedMpg}
+
+---
+EMPIRICAL PEER DATA (Completed Hauls by Other Registered Users):
+${peerHauls.length > 0 ? JSON.stringify(peerHauls.slice(0, 50)) : "No peer data available yet (cold start)."}
+
+---
+CALIBRATION RULES:
+1. Examine the real-world peer data. Find matches or close subsets of truck specs, towing weight ranges, and trailer types. Notice if peer operators are achieving higher or lower MPGs than physics-only expectations due to driving habits, aero, or load distribution.
+2. Adjust the base expected MPG to reflect these actual observed real-world performance levels.
+3. If peer data is sparse or empty, output a calibratedTargetMpg equal or very close to the Physical Formula Expected MPG, and indicate a lower confidence score (e.g. 50%).
+4. The output "calibratedTargetMpg" must be a clean number between 3.0 and 16.0 (rounded to 1 decimal place).
+5. Output an explanation under "calibrationExplanation" using professional, precise, and practical logistics/transport terminology. If peer data is sparse, explain that the learning model initialized with baseline physics parameters and will continuously self-calibrate as more peer datasets are logged. Keep explanation professional, maximum 2 sentences.
+
+Provide the response strictly in JSON format matching this schema:
+{
+  "calibratedTargetMpg": number,
+  "confidenceScore": number,
+  "calibrationExplanation": string
+}`;
+
+    const calibrationResponse = await getAI().models.generateContent({
+      model: "gemini-3.8-flash",
+      contents: prompt,
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            calibratedTargetMpg: { type: Type.NUMBER },
+            confidenceScore: { type: Type.NUMBER },
+            calibrationExplanation: { type: Type.STRING }
+          },
+          required: ["calibratedTargetMpg", "confidenceScore", "calibrationExplanation"]
+        }
+      }
+    });
+
+    const resultText = calibrationResponse.text;
+    if (!resultText) {
+      throw new Error("Empty calibration response from model");
+    }
+
+    const parsedResult = JSON.parse(resultText);
+    res.json(parsedResult);
+
+  } catch (error: any) {
+    console.error("Error in calibration learning model:", error);
+    res.json({
+      calibratedTargetMpg: Number(req.body?.baseExpectedMpg || 10.0),
+      confidenceScore: 50,
+      calibrationExplanation: "Learning model initialized with baseline physical limits due to a transient API evaluation state."
+    });
   }
 });
 
@@ -1029,7 +1157,7 @@ app.post('/api/auth/verify-registration', async (req, res) => {
       authChallenges.delete(userId);
 
       // Best effort mirror to Firestore if admin credentials exist
-      if (db) {
+      if (db && process.env.FIREBASE_SERVICE_ACCOUNT_KEY) {
         try {
           await db.collection('authenticators').doc(credential.id).set(newAuth);
         } catch (e) {
@@ -1131,14 +1259,12 @@ app.post('/api/auth/verify-authentication', async (req, res) => {
       saveAuthenticators(all);
       authChallenges.delete(userId);
 
-      // Attempt custom token creation if Firebase Admin credential exists
+      // Attempt custom token creation if Firebase Admin is initialized (works on Cloud Run using default credentials)
       let customToken: string | null = null;
       try {
-        if (process.env.FIREBASE_SERVICE_ACCOUNT_KEY) {
-          customToken = await getAuth().createCustomToken(userId);
-        }
+        customToken = await getAuth().createCustomToken(userId);
       } catch (tokenErr) {
-        console.warn("Custom token generation omitted (requires Firebase service account):", tokenErr);
+        console.warn("Custom token generation failed or omitted:", tokenErr);
       }
 
       res.json({ 

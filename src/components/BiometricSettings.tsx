@@ -578,6 +578,16 @@ export default function BiometricSettings() {
         .then(data => {
           if (data?.hasBiometrics) {
             setBioSuccess(true);
+            try {
+              localStorage.setItem('lod_has_biometrics', 'true');
+              if (user.email) {
+                localStorage.setItem('lod_last_email', user.email);
+              }
+            } catch (e) {}
+          } else {
+            try {
+              localStorage.setItem('lod_has_biometrics', 'false');
+            } catch (e) {}
           }
         })
         .catch(() => {});
@@ -651,6 +661,12 @@ export default function BiometricSettings() {
 
       if (verification.verified) {
         setBioSuccess(true);
+        try {
+          localStorage.setItem('lod_has_biometrics', 'true');
+          if (user.email) {
+            localStorage.setItem('lod_last_email', user.email);
+          }
+        } catch (e) {}
       } else {
         throw new Error('Verification failed. Unable to verify device biometric key.');
       }

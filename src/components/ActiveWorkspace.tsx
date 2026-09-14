@@ -724,6 +724,12 @@ export default function ActiveWorkspace({ haul, onClose, customFolders = [], onU
   const [manualFuelPrice, setManualFuelPrice] = useState<number | null>(null);
   const [showTopConfigs, setShowTopConfigs] = useState(false);
   const [showMySimilarUnits, setShowMySimilarUnits] = useState(false);
+  const [calibratedTarget, setCalibratedTarget] = useState<{
+    calibratedTargetMpg: number;
+    confidenceScore: number;
+    calibrationExplanation: string;
+  } | null>(null);
+  const [isLoadingCalibration, setIsLoadingCalibration] = useState<boolean>(false);
 
   // Swipe gesture tracking (back and forward)
   const touchStartRef = useRef<{ x: number; y: number; time: number } | null>(null);
@@ -1009,16 +1015,48 @@ export default function ActiveWorkspace({ haul, onClose, customFolders = [], onU
   const stats = calculateTotals(localHaul, expenses);
   const { expectedMpg: expectedVehicleMpg } = getExpectedVehicleMpg(userProfile, localHaul, traversedStates);
 
-  const mySimilarHauls = (() => {
-    let isDiesel = (userProfile?.fuelType || 'Diesel') === 'Diesel';
-    const engineLower = (userProfile?.engineType || "").toLowerCase();
-    if (engineLower.includes("diesel")) {
-      isDiesel = true;
-    } else if (engineLower.includes("gas") || engineLower.includes("hemi") || engineLower.includes("vortec") || engineLower.includes("godzilla")) {
-      isDiesel = false;
+  const combinedHaulsGlobal = useMemo(() => {
+    const map = new Map();
+    if (allPlatformCompletedHauls && Array.isArray(allPlatformCompletedHauls)) {
+      allPlatformCompletedHauls.forEach(h => { 
+        if (h && h.id && h.id !== localHaul.id) map.set(h.id, h); 
+      });
     }
+    if (myHistoricalCompletedHauls && Array.isArray(myHistoricalCompletedHauls)) {
+      myHistoricalCompletedHauls.forEach(h => {
+        if (!h || !h.id || h.id === localHaul.id) return;
+        map.set(h.id, {
+          ...h,
+          ownerId: h.ownerId || auth.currentUser?.uid,
+          loadedMpg: Number(h.loadedMpg || h.milesPerGallon || 0),
+          powerUnitYear: h.powerUnitYear || (userProfile?.powerUnitYear ? Number(userProfile.powerUnitYear) : ''),
+          powerUnitMake: h.powerUnitMake || userProfile?.powerUnitMake || '',
+          powerUnitModel: h.powerUnitModel || userProfile?.powerUnitModel || '',
+          engineType: h.engineType || userProfile?.engineType || '',
+          duallyOrSrw: h.duallyOrSrw || userProfile?.duallyOrSrw || 'SRW',
+          drivetrain: h.drivetrain || userProfile?.drivetrain || '',
+          powerUnitScaleWeight: h.powerUnitScaleWeight || (userProfile?.powerUnitScaleWeight ? Number(userProfile.powerUnitScaleWeight) : ''),
+          powerUnitWheelbase: h.powerUnitWheelbase || userProfile?.powerUnitWheelbase || '',
+          fuelType: h.fuelType || userProfile?.fuelType || ''
+        });
+      });
+    }
+    return Array.from(map.values());
+  }, [allPlatformCompletedHauls, myHistoricalCompletedHauls, userProfile, auth.currentUser, localHaul.id]);
 
-    const curWeight = parseCleanWeight(localHaul.scaleWeight) || 0;
+  const mySimilarHauls = (() => {
+    // Leverage the fully-enriched combined dataset and match on identical setups
+    const similarGlobal = getRegisteredUserSimilarSetups(combinedHaulsGlobal, userProfile, localHaul);
+    
+    // Keep only the current user's matching trips
+    const matched = similarGlobal.filter(h => 
+      h && 
+      h.ownerId && 
+      auth.currentUser && 
+      (h.ownerId === auth.currentUser.uid || h.ownerId === userProfile?.uid || h.ownerId === userProfile?.id)
+    );
+
+    // Sort to prioritize same terrain first, then date descending
     const getTerrainCategoryForLocs = (states: string[], pickUp: string, delivery: string) => {
       const allStates = new Set<string>(states);
       const pCode = extractStateCode(pickUp);
@@ -1042,30 +1080,7 @@ export default function ActiveWorkspace({ haul, onClose, customFolders = [], onU
     };
 
     const curTerrain = getTerrainCategoryForLocs(traversedStates, localHaul.pickUpLocation || "", localHaul.deliveryLocation || "");
-    const myCompleted = myHistoricalCompletedHauls.length > 0
-      ? myHistoricalCompletedHauls.filter(h => h && h.id !== localHaul.id && (h.loadedMpg > 0 || h.milesPerGallon > 0))
-      : allPlatformCompletedHauls.filter(h => h && h.ownerId && auth.currentUser && h.ownerId === auth.currentUser.uid && h.id !== localHaul.id);
 
-    const sameFuelType = myCompleted.filter(item => {
-      if (!item) return false;
-      const itemEngine = (item.engineType || "").toLowerCase();
-      const itemIsDiesel = item.fuelType === 'Diesel' || itemEngine.includes('diesel');
-      return itemIsDiesel === isDiesel;
-    });
-    const baseSet = sameFuelType.length > 0 ? sameFuelType : myCompleted;
-
-    const matched = baseSet.filter(item => {
-      if (!item) return false;
-      const itemWeight = Number(item.scaleWeight || 0);
-      if (curWeight > 0) {
-        if (itemWeight <= 0) return false;
-        const weightDiff = Math.abs(itemWeight - curWeight);
-        return weightDiff <= 1000;
-      }
-      return true;
-    });
-
-    // Sort to prioritize same terrain first, then date descending
     matched.sort((a, b) => {
       const terrainA = getTerrainCategoryForLocs([], a.pickUpLocation || "", a.deliveryLocation || "") === curTerrain;
       const terrainB = getTerrainCategoryForLocs([], b.pickUpLocation || "", b.deliveryLocation || "") === curTerrain;
@@ -1082,15 +1097,8 @@ export default function ActiveWorkspace({ haul, onClose, customFolders = [], onU
   })();
 
   const myAvgSimilarMpg = (() => {
-    const last5 = [...mySimilarHauls]
-      .sort((a, b) => {
-        const dateA = a.pickUpDate ? new Date(a.pickUpDate).getTime() : 0;
-        const dateB = b.pickUpDate ? new Date(b.pickUpDate).getTime() : 0;
-        return dateB - dateA;
-      })
-      .slice(0, 5);
-    return last5.length > 0
-      ? last5.reduce((acc, h) => acc + (h.loadedMpg || h.milesPerGallon || 0), 0) / last5.length
+    return mySimilarHauls.length > 0
+      ? mySimilarHauls.reduce((acc, h) => acc + (h.loadedMpg || h.milesPerGallon || 0), 0) / mySimilarHauls.length
       : 0;
   })();
 
@@ -1168,32 +1176,7 @@ export default function ActiveWorkspace({ haul, onClose, customFolders = [], onU
     return sum / matched.length;
   })();
 
-  const combinedHaulsGlobal = useMemo(() => {
-    const map = new Map();
-    if (allPlatformCompletedHauls && Array.isArray(allPlatformCompletedHauls)) {
-      allPlatformCompletedHauls.forEach(h => { if (h && h.id) map.set(h.id, h); });
-    }
-    if (myHistoricalCompletedHauls && Array.isArray(myHistoricalCompletedHauls)) {
-      myHistoricalCompletedHauls.forEach(h => {
-        if (!h || !h.id) return;
-        map.set(h.id, {
-          ...h,
-          ownerId: h.ownerId || auth.currentUser?.uid,
-          loadedMpg: Number(h.loadedMpg || h.milesPerGallon || 0),
-          powerUnitYear: h.powerUnitYear || (userProfile?.powerUnitYear ? Number(userProfile.powerUnitYear) : ''),
-          powerUnitMake: h.powerUnitMake || userProfile?.powerUnitMake || '',
-          powerUnitModel: h.powerUnitModel || userProfile?.powerUnitModel || '',
-          engineType: h.engineType || userProfile?.engineType || '',
-          duallyOrSrw: h.duallyOrSrw || userProfile?.duallyOrSrw || 'SRW',
-          drivetrain: h.drivetrain || userProfile?.drivetrain || '',
-          powerUnitScaleWeight: h.powerUnitScaleWeight || (userProfile?.powerUnitScaleWeight ? Number(userProfile.powerUnitScaleWeight) : ''),
-          powerUnitWheelbase: h.powerUnitWheelbase || userProfile?.powerUnitWheelbase || '',
-          fuelType: h.fuelType || userProfile?.fuelType || ''
-        });
-      });
-    }
-    return Array.from(map.values());
-  }, [allPlatformCompletedHauls, myHistoricalCompletedHauls, userProfile, auth.currentUser]);
+
 
   const top5GlobalSetups = useMemo(() => {
     const setupGroups = new Map<string, any>();
@@ -1243,10 +1226,11 @@ export default function ActiveWorkspace({ haul, onClose, customFolders = [], onU
   }, [combinedHaulsGlobal, userProfile, localHaul]);
 
   const industryAvgMpg = useMemo(() => {
-    if (top5GlobalSetups.length === 0) return 0;
-    const sum = top5GlobalSetups.reduce((acc, g) => acc + g.avgMpg, 0);
-    return sum / top5GlobalSetups.length;
-  }, [top5GlobalSetups]);
+    const similarGlobal = getRegisteredUserSimilarSetups(combinedHaulsGlobal, userProfile, localHaul);
+    if (similarGlobal.length === 0) return 0;
+    const sum = similarGlobal.reduce((acc, h) => acc + (h.loadedMpg || h.milesPerGallon || 0), 0);
+    return sum / similarGlobal.length;
+  }, [combinedHaulsGlobal, userProfile, localHaul]);
 
   const [showErrors, setShowErrors] = useState(false);
 
@@ -1470,41 +1454,74 @@ export default function ActiveWorkspace({ haul, onClose, customFolders = [], onU
     } catch(err) { console.error(err); }
   };
 
+  const compressImage = (file: File, maxDimension = 800, quality = 0.6): Promise<string> => {
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.readAsDataURL(file);
+      reader.onload = (event) => {
+        const img = new Image();
+        img.src = event.target?.result as string;
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          let width = img.width;
+          let height = img.height;
+
+          if (width > height) {
+            if (width > maxDimension) {
+              height = Math.round((height * maxDimension) / width);
+              width = maxDimension;
+            }
+          } else {
+            if (height > maxDimension) {
+              width = Math.round((width * maxDimension) / height);
+              height = maxDimension;
+            }
+          }
+
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) {
+            resolve(event.target?.result as string);
+            return;
+          }
+
+          ctx.drawImage(img, 0, 0, width, height);
+          const dataUrl = canvas.toDataURL('image/jpeg', quality);
+          resolve(dataUrl);
+        };
+        img.onerror = () => {
+          resolve(event.target?.result as string);
+        };
+      };
+      reader.onerror = () => {
+        resolve('');
+      };
+    });
+  };
+
   const handleReceiptScan = async (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || !haul?.id || !auth.currentUser) return;
 
     setIsUploadingReceipt(true);
     try {
-      // 1. Read file as Base64 for the API
-      const base64String = await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => {
-          if (typeof reader.result === 'string') {
-            const parts = reader.result.split(',');
-            resolve(parts[1] || parts[0]);
-          } else {
-            reject(new Error("File read failed"));
-          }
-        };
-        reader.onerror = () => reject(reader.error);
-        reader.readAsDataURL(file);
-      });
+      // 1. Compress image to prevent Firestore 1 MiB limits and speed up OCR transfer
+      const dataUrl = await compressImage(file);
+      if (!dataUrl) {
+        throw new Error("Failed to process the image file.");
+      }
 
-      // 2. Read full data URL for Firestore compliance payload
-      const dataUrl = await new Promise<string>((resolve) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(reader.result as string);
-        reader.readAsDataURL(file);
-      });
+      const parts = dataUrl.split(',');
+      const base64String = parts[1] || parts[0];
 
-      // 3. Post to Gemini backend parser
+      // 2. Post to Gemini backend parser
       const response = await fetch('/api/parse-receipt', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           imageBase64: base64String,
-          mimeType: file.type || 'image/jpeg'
+          mimeType: 'image/jpeg'
         })
       });
 
@@ -1647,6 +1664,79 @@ export default function ActiveWorkspace({ haul, onClose, customFolders = [], onU
     return () => { unsub(); sub2(); };
   }, [haul?.id, auth.currentUser]);
 
+  // AI Continuous Learning Calibration Model
+  useEffect(() => {
+    if (!userProfile) return;
+    
+    let isActive = true;
+    const timer = setTimeout(async () => {
+      setIsLoadingCalibration(true);
+      try {
+        const response = await fetch('/api/calibrated-target', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            userProfile,
+            localHaul: {
+              id: localHaul.id,
+              ownerId: localHaul.ownerId,
+              unitType: localHaul.unitType,
+              unitLength: localHaul.unitLength,
+              scaleWeight: localHaul.scaleWeight,
+              scaleWeight2: localHaul.scaleWeight2,
+              scaleWeight3: localHaul.scaleWeight3,
+              grossWeight: localHaul.grossWeight,
+              axles: localHaul.axles,
+              operatorType: currentOperatorType
+            },
+            traversedStates,
+            baseExpectedMpg: expectedVehicleMpg
+          })
+        });
+        if (!response.ok) throw new Error("API responded with " + response.status);
+        const data = await response.json();
+        if (isActive && data) {
+          setCalibratedTarget({
+            calibratedTargetMpg: Number(data.calibratedTargetMpg || expectedVehicleMpg),
+            confidenceScore: Number(data.confidenceScore || 50),
+            calibrationExplanation: String(data.calibrationExplanation || '')
+          });
+        }
+      } catch (err) {
+        console.warn("Could not calculate calibrated learning target:", err);
+        if (isActive) {
+          setCalibratedTarget({
+            calibratedTargetMpg: expectedVehicleMpg,
+            confidenceScore: 50,
+            calibrationExplanation: "Fallback: Standard Physical Calibration baseline active."
+          });
+        }
+      } finally {
+        if (isActive) {
+          setIsLoadingCalibration(false);
+        }
+      }
+    }, 1000); // 1.0s debounce
+
+    return () => {
+      isActive = false;
+      clearTimeout(timer);
+    };
+  }, [
+    userProfile?.id,
+    localHaul.id,
+    localHaul.unitType,
+    localHaul.unitLength,
+    localHaul.scaleWeight,
+    localHaul.scaleWeight2,
+    localHaul.scaleWeight3,
+    localHaul.grossWeight,
+    localHaul.axles,
+    currentOperatorType,
+    expectedVehicleMpg,
+    JSON.stringify(traversedStates)
+  ]);
+
   return (
     <motion.div
       initial={{ y: '100%' }}
@@ -1737,6 +1827,7 @@ export default function ActiveWorkspace({ haul, onClose, customFolders = [], onU
               <input 
                 type="file" 
                 accept="image/*" 
+                capture="environment"
                 onChange={handleReceiptScan} 
                 disabled={isUploadingReceipt} 
                 className="hidden" 
@@ -2542,6 +2633,7 @@ export default function ActiveWorkspace({ haul, onClose, customFolders = [], onU
 
                   // Compute expected base MPG according to vehicle profile configuration specs
                   const { expectedMpg: expectedVehicleMpg, tireAdjustment } = getExpectedVehicleMpg(userProfile, localHaul, traversedStates);
+                  const calibratedMpg = calibratedTarget ? calibratedTarget.calibratedTargetMpg : expectedVehicleMpg;
                   
                   // Dynamically determine the 100 Target based on similar history and registered user avg
                   const dynamic100TargetMpg = (() => {
@@ -2552,7 +2644,7 @@ export default function ActiveWorkspace({ haul, onClose, customFolders = [], onU
                     } else if (peersAvgSimilarMpg > 0) {
                       return peersAvgSimilarMpg;
                     }
-                    return expectedVehicleMpg;
+                    return calibratedMpg;
                   })();
 
                   // Define dynamic Towing Efficiency Rating score mapping relative to dynamic100TargetMpg
@@ -2576,7 +2668,7 @@ export default function ActiveWorkspace({ haul, onClose, customFolders = [], onU
                   const historyScore = getScoreForMpg(myAvgSimilarMpg);
 
                   const activeCostPerMile = activeLoadedMpg > 0 ? (currentFuelPrice / activeLoadedMpg) : 0;
-                  const expectedCostPerMile = expectedVehicleMpg > 0 ? (currentFuelPrice / expectedVehicleMpg) : 0;
+                  const expectedCostPerMile = calibratedMpg > 0 ? (currentFuelPrice / calibratedMpg) : 0;
 
                   const costDifference = expectedCostPerMile - activeCostPerMile;
                   const dynamicRating = activeLoadedMpg === 0 
@@ -2610,7 +2702,7 @@ export default function ActiveWorkspace({ haul, onClose, customFolders = [], onU
                           {profileString ? (
                             <div className="flex flex-col gap-0.5 mt-0.5">
                               <p className="text-[10px] text-indigo-600 font-bold flex items-center gap-1.5">
-                                <PickupTruckIcon className="w-3.5 h-3.5 text-indigo-600" /> Calibrated Performance Target: {expectedVehicleMpg.toFixed(1)} MPG ({isDiesel ? 'Diesel' : 'Gasoline'})
+                                <PickupTruckIcon className="w-3.5 h-3.5 text-indigo-600" /> Calibrated Performance Target: {calibratedMpg.toFixed(1)} MPG ({isDiesel ? 'Diesel' : 'Gasoline'})
                               </p>
                               <p className="text-[9px] text-slate-500 font-semibold italic">
                                 Targets adjusted for Unit Weight ({localHaul.scaleWeight || 0} lbs) {traversedStates.length > 0 ? `+ Route Terrain (${traversedStates.join(', ')})` : ''}. Baseline Index 100 represents target.
@@ -2640,16 +2732,16 @@ export default function ActiveWorkspace({ haul, onClose, customFolders = [], onU
                       </div>
 
                       {/* Target explanation helper banner */}
-                      <div className="bg-slate-100/60 border border-slate-200/50 rounded-2xl p-3 sm:p-4 text-[11px] leading-relaxed text-slate-600 space-y-1.5 shadow-xs">
+                      <div className="bg-slate-100/60 border border-slate-200/50 rounded-2xl p-3 sm:p-4 text-[11px] leading-relaxed text-slate-600 space-y-2 shadow-xs">
                         <p className="font-bold text-slate-800 flex items-center gap-1.5 text-xs">
                           <Info className="w-3.5 h-3.5 text-indigo-600" />
                           Understanding the MPG Targets
                         </p>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5 pt-1.5 divide-y md:divide-y-0 md:divide-x divide-slate-200/60">
                           <div className="space-y-0.5">
-                            <span className="font-bold text-indigo-600 flex items-center gap-1.5"><PickupTruckIcon className="w-3.5 h-3.5 text-indigo-600" /> Calibrated Performance Target ({expectedVehicleMpg.toFixed(1)} MPG):</span>
+                            <span className="font-bold text-indigo-600 flex items-center gap-1.5"><PickupTruckIcon className="w-3.5 h-3.5 text-indigo-600" /> Calibrated Performance Target ({calibratedMpg.toFixed(1)} MPG):</span>
                             <p className="text-slate-500 text-[10.5px]">
-                              The physical, theoretical fuel economy based purely on your truck specs, trailer type, scale weights, aerodynamic wind profiles, and Route Terrain.
+                              The physical, theoretical fuel economy based on your truck specs, trailer type, scale weights, and Route Terrain, continuously optimized in the background by our adaptive peer learning model.
                             </p>
                           </div>
                           <div className="space-y-0.5 pt-2.5 md:pt-0 md:pl-3.5">
@@ -2661,7 +2753,7 @@ export default function ActiveWorkspace({ haul, onClose, customFolders = [], onU
                         </div>
 
                         {/* Tire specification impact note */}
-                        <div className="pt-2.5 border-t border-slate-200/50 flex flex-wrap items-center gap-2 text-[10.5px]">
+                        <div className="pt-2 border-t border-slate-200/50 flex flex-wrap items-center gap-2 text-[10.5px]">
                           <span className="font-bold text-slate-700 flex items-center gap-1.5"><TireWheelIcon className="w-4 h-4" /> Tire Spec Calibration Impact:</span>
                           {userProfile?.tireMake || userProfile?.tireType || userProfile?.tireSize ? (
                             <>
@@ -2926,6 +3018,7 @@ export default function ActiveWorkspace({ haul, onClose, customFolders = [], onU
                   <input 
                     type="file" 
                     accept="image/*" 
+                    capture="environment"
                     onChange={handleReceiptScan} 
                     disabled={isUploadingReceipt} 
                     className="hidden" 

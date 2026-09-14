@@ -1,4 +1,4 @@
-import { useState, FormEvent, MouseEvent } from 'react';
+import { useState, useEffect, FormEvent, MouseEvent } from 'react';
 import { auth, db, googleProvider } from '../lib/firebase';
 import { 
   signInWithPopup,
@@ -19,7 +19,13 @@ import { motion, AnimatePresence } from 'motion/react';
 
 export default function Login() {
   const [isLogin, setIsLogin] = useState(true);
-  const [email, setEmail] = useState('');
+  const [email, setEmail] = useState(() => {
+    try {
+      return localStorage.getItem('lod_last_email') || '';
+    } catch {
+      return '';
+    }
+  });
   const [password, setPassword] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [staySignedIn, setStaySignedIn] = useState(true);
@@ -33,6 +39,11 @@ export default function Login() {
     sessionStorage.setItem('lod_session_start', Date.now().toString());
     localStorage.setItem('lod_last_active_time', Date.now().toString());
     localStorage.removeItem('lod_background_entered');
+    if (user.email) {
+      try {
+        localStorage.setItem('lod_last_email', user.email);
+      } catch (e) {}
+    }
 
     const userRef = doc(db, 'users', user.uid);
     const userSnap = await getDoc(userRef);
@@ -124,6 +135,12 @@ export default function Login() {
       const { verified, customToken } = await verifyRes.json();
 
       if (verified && customToken) {
+        try {
+          localStorage.setItem('lod_has_biometrics', 'true');
+          if (email) {
+            localStorage.setItem('lod_last_email', email);
+          }
+        } catch (e) {}
         await setPersistence(auth, staySignedIn ? browserLocalPersistence : browserSessionPersistence);
         const result = await signInWithCustomToken(auth, customToken);
         await syncUserProfile(result.user);
@@ -143,6 +160,23 @@ export default function Login() {
       setLoading(false);
     }
   };
+
+  useEffect(() => {
+    let active = true;
+    const lastEmail = localStorage.getItem('lod_last_email');
+    const hasBio = localStorage.getItem('lod_has_biometrics') === 'true';
+    if (isLogin && hasBio && lastEmail && !loading && email) {
+      const timer = setTimeout(() => {
+        if (active) {
+          handleBiometricSignIn();
+        }
+      }, 600);
+      return () => {
+        active = false;
+        clearTimeout(timer);
+      };
+    }
+  }, [isLogin]);
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
