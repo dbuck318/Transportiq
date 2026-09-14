@@ -511,7 +511,7 @@ app.post("/api/parse-receipt", async (req, res) => {
       contents: {
         parts: [
           { inlineData: { data: imageBase64, mimeType } },
-          { text: "Extract receipt details. Be extremely precise. If the receipt is for fuel and it ALSO registers Diesel Exhaust Fluid (DEF) alongside fuel, please extract the DEF portion separately and return it in the 'defItem' field. For example, if the total receipt is $150, which includes $130 in Fuel and $20 in DEF, the top-level amount should be 130 (category 'Fuel'), and 'defItem' should contain a separate object with category 'DEF' and amount 20 (and its corresponding gallons and pricePerGallon if available). Otherwise, set 'defItem' to null. Format as JSON with: vendor, timestamp (ISO), category (one of: Fuel, DEF, Maintenance, Food, Misc, Toll), amount (number), gallons (number, null if not fuel or DEF), pricePerGallon (number, null if not fuel or DEF), and optionally 'defItem' (with vendor, timestamp, category='DEF', amount, gallons, pricePerGallon)." }
+          { text: "Extract receipt details. Be extremely precise. Crucially, look for BOTH Fuel/Diesel lines and DEF (Diesel Exhaust Fluid) lines on the receipt. If the receipt contains BOTH fuel/diesel costs and DEF costs, price per gallon, or gallons pumped, you MUST split them. Put the main Fuel portion in the top-level object (category='Fuel', amount, gallons, pricePerGallon) and put the DEF portion in the 'defItem' field (category='DEF', amount, gallons, pricePerGallon). If the category is 'Misc' (Other/Miscellaneous), please identify the purpose/use of the expense (e.g., 'shower', 'charity', 'hotel', 'parking') and return it in the 'purpose' field. Format as JSON with: vendor, timestamp (ISO), category (one of: Fuel, DEF, Maintenance, Food, Misc, Toll), amount (number), gallons (number, null if not fuel or DEF), pricePerGallon (number, null if not fuel or DEF), purpose (string, null if not Misc), and optionally 'defItem' (with vendor, timestamp, category='DEF', amount, gallons, pricePerGallon)." }
         ]
       },
       config: {
@@ -525,6 +525,7 @@ app.post("/api/parse-receipt", async (req, res) => {
             amount: { type: Type.NUMBER },
             gallons: { type: Type.NUMBER },
             pricePerGallon: { type: Type.NUMBER },
+            purpose: { type: Type.STRING },
             defItem: {
               type: Type.OBJECT,
               properties: {

@@ -1443,6 +1443,7 @@ export default function ActiveWorkspace({ haul, onClose, customFolders = [], onU
         haulId: haul.id,
         ownerId: auth.currentUser.uid,
         timestamp: new Date().toISOString(),
+        purpose: category === 'Misc' ? '' : undefined
       });
     } catch(err) { console.error(err); }
   };
@@ -1550,7 +1551,8 @@ export default function ActiveWorkspace({ haul, onClose, customFolders = [], onU
         timestamp: parsed.timestamp || new Date().toISOString(),
         vendor: parsed.vendor || 'Unknown Vendor',
         gallons: parsed.gallons ? Number(parsed.gallons) : undefined,
-        pricePerGallon: parsed.pricePerGallon ? Number(parsed.pricePerGallon) : undefined
+        pricePerGallon: parsed.pricePerGallon ? Number(parsed.pricePerGallon) : undefined,
+        purpose: parsed.purpose || undefined
       });
 
       // 6. Support double-item split transaction mapping for DEF
@@ -3057,7 +3059,7 @@ export default function ActiveWorkspace({ haul, onClose, customFolders = [], onU
                               <Plus className="w-5 h-5 text-slate-600" />
                             )}
                           </div>
-                          <div className={`grid grid-cols-2 ${(exp.category === 'Fuel' || exp.category === 'DEF') ? 'md:grid-cols-5' : 'md:grid-cols-3'} gap-4 md:gap-6 flex-1 items-center`}>
+                          <div className={`grid grid-cols-2 ${(exp.category === 'Fuel' || exp.category === 'DEF') ? 'md:grid-cols-5' : (exp.category === 'Misc' ? 'md:grid-cols-4' : 'md:grid-cols-3')} gap-4 md:gap-6 flex-1 items-center`}>
                             <div className="flex flex-col">
                               <label className="text-[10px] font-bold uppercase text-slate-400 mb-1 flex items-center gap-1.5">
                                 Category
@@ -3077,6 +3079,18 @@ export default function ActiveWorkspace({ haul, onClose, customFolders = [], onU
                                 className="text-sm font-semibold text-slate-900 bg-transparent focus:outline-none w-full border-b border-transparent focus:border-blue-200 transition-colors"
                               />
                             </div>
+                            {exp.category === 'Misc' && (
+                              <div className="flex flex-col">
+                                <label className="text-[10px] font-bold uppercase text-slate-400 mb-1">Purpose / Use</label>
+                                <input 
+                                  type="text" 
+                                  value={exp.purpose || ''} 
+                                  placeholder="e.g. shower, charity, hotel..."
+                                  onChange={(e) => updateExpense(exp.id, { purpose: e.target.value })}
+                                  className="text-sm font-semibold text-slate-900 bg-transparent focus:outline-none w-full border-b border-transparent focus:border-blue-200 transition-colors"
+                                />
+                              </div>
+                            )}
                             <div className="flex flex-col">
                               <label className="text-[10px] font-bold uppercase text-slate-400 mb-1">Amount</label>
                               <div className="flex items-center gap-1">

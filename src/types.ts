@@ -56,6 +56,7 @@ export interface Expense {
   pricePerGallon?: number;
   timestamp: string;
   ownerId: string;
+  purpose?: string;
 }
 
 export interface OCRResult {
@@ -65,6 +66,7 @@ export interface OCRResult {
   amount: number;
   gallons?: number;
   pricePerGallon?: number;
+  purpose?: string;
   defItem?: {
     vendor: string;
     timestamp: string;

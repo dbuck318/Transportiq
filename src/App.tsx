@@ -388,6 +388,17 @@ export default function App() {
       }
 
       if (u) {
+        // Require verification if app was manually closed (sessionStorage is cleared)
+        const isSessionActive = sessionStorage.getItem('lod_session_active') === 'true';
+        if (!isSessionActive) {
+          localStorage.removeItem('lod_background_entered');
+          localStorage.removeItem('lod_last_active_time');
+          logout();
+          setUser(null);
+          setLoading(false);
+          return;
+        }
+
         // Check if app was left in background for 30 or more minutes
         const now = Date.now();
         const THIRTY_MINUTES_MS = 30 * 60 * 1000;
