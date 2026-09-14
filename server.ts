@@ -514,6 +514,20 @@ app.post("/api/parse-receipt", async (req, res) => {
           { text: `Extract receipt details with extreme, high-fidelity precision.
 You are scanning truck stop and logistics receipts (Pilot Flying J, Loves, TA, Petro, etc.) for a professional hotshot owner-operator.
 
+CRITICAL MANDATE FOR MULTI-ITEM RECEIPTS (GENERAL EXPENSES):
+Many receipts from truck stops or merchants contain multiple separate purchase items on a single receipt.
+For example, an Iowa 80 TA Truckstop receipt with:
+1. A Shower ($17.00)
+2. An Armrest ($22.53)
+Instead of combining these into a single "Misc" or "Maintenance" entry of $40.53, you MUST split them into separate entries inside the 'items' array.
+- Item 1: Category = "Misc", Amount = 17.00, Purpose = "Shower"
+- Item 2: Category = "Maintenance", Amount = 22.53, Purpose = "Armrest"
+
+Another example:
+- A receipt with multiple tools, replacement vehicle parts, meals, or services.
+- If the receipt contains multiple distinct items, ALWAYS populate the 'items' array with each itemized purchase. Make sure their amounts sum up to the total receipt amount.
+- If there is only one purchase item on the receipt, you can leave the 'items' array empty ([]) or populate it with that single item.
+
 CRITICAL MANDATE FOR DIESEL AND DEF (DIESEL EXHAUST FLUID):
 Truck stop receipts frequently list TWO separate fluid purchases on a single receipt:
 1. Diesel Fuel (larger volume, e.g., 30-150+ gallons, higher total cost, e.g., "1 Truck Diesel" or "Diesel")
@@ -580,9 +594,24 @@ Format strictly as JSON matching the schema.` }
                 pricePerGallon: { type: Type.NUMBER }
               },
               required: ["amount"]
+            },
+            items: {
+              type: Type.ARRAY,
+              description: "Array of itemized purchases from the receipt. If there are multiple separate items (e.g. a shower, an armrest, some food, separate parts, or fuel and DEF), list each one individually here. If there is only one item, populate this array with that single item, or leave it empty.",
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  category: { type: Type.STRING, enum: ["Fuel", "DEF", "Maintenance", "Food", "Misc", "Toll"] },
+                  amount: { type: Type.NUMBER },
+                  purpose: { type: Type.STRING },
+                  gallons: { type: Type.NUMBER },
+                  pricePerGallon: { type: Type.NUMBER }
+                },
+                required: ["category", "amount", "purpose"]
+              }
             }
           },
-          required: ["thinking", "hasDefItem", "vendor", "amount", "category", "defItem"]
+          required: ["thinking", "hasDefItem", "vendor", "amount", "category", "defItem", "items"]
         }
       }
     });

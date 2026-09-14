@@ -1577,34 +1577,63 @@ export default function ActiveWorkspace({ haul, onClose, customFolders = [], onU
         mappedCategory = 'Misc';
       }
 
-      // 5. Create core corresponding expense record
-      const mainExpenseDoc = cleanObject({
-        haulId: haul.id,
-        category: mappedCategory,
-        amount: Number(parsed.amount || 0),
-        ownerId: auth.currentUser.uid,
-        timestamp: validTimestamp,
-        vendor: parsed.vendor || 'Unknown Vendor',
-        gallons: parsed.gallons ? Number(parsed.gallons) : undefined,
-        pricePerGallon: parsed.pricePerGallon ? Number(parsed.pricePerGallon) : undefined,
-        purpose: parsed.purpose || undefined
-      });
-      await addDoc(collection(db, 'hauls', haul.id, 'expenses'), mainExpenseDoc);
+      // Check if we have multiple itemized expenses to split
+      const hasMultipleItems = parsed.items && Array.isArray(parsed.items) && parsed.items.length > 1;
 
-      // 6. Support double-item split transaction mapping for DEF
-      if (parsed.defItem) {
-        const defTimestamp = getValidISOString(parsed.defItem.timestamp || parsed.timestamp);
-        const defExpenseDoc = cleanObject({
+      if (hasMultipleItems) {
+        // 5. Loop and create separate expense records for each itemized purchase
+        for (const item of parsed.items) {
+          let itemCategory = item.category || 'Misc';
+          if (itemCategory === 'Toll') {
+            itemCategory = 'Permits';
+          }
+          if (!allowedCategories.includes(itemCategory)) {
+            itemCategory = 'Misc';
+          }
+
+          const expenseDoc = cleanObject({
+            haulId: haul.id,
+            category: itemCategory,
+            amount: Number(item.amount || 0),
+            ownerId: auth.currentUser.uid,
+            timestamp: validTimestamp,
+            vendor: parsed.vendor || 'Unknown Vendor',
+            gallons: item.gallons ? Number(item.gallons) : undefined,
+            pricePerGallon: item.pricePerGallon ? Number(item.pricePerGallon) : undefined,
+            purpose: item.purpose || undefined
+          });
+          await addDoc(collection(db, 'hauls', haul.id, 'expenses'), expenseDoc);
+        }
+      } else {
+        // 5. Create core corresponding single expense record
+        const mainExpenseDoc = cleanObject({
           haulId: haul.id,
-          category: 'DEF',
-          amount: Number(parsed.defItem.amount || 0),
+          category: mappedCategory,
+          amount: Number(parsed.amount || 0),
           ownerId: auth.currentUser.uid,
-          timestamp: defTimestamp,
-          vendor: parsed.defItem.vendor || parsed.vendor || 'Unknown Vendor',
-          gallons: parsed.defItem.gallons ? Number(parsed.defItem.gallons) : undefined,
-          pricePerGallon: parsed.defItem.pricePerGallon ? Number(parsed.defItem.pricePerGallon) : undefined
+          timestamp: validTimestamp,
+          vendor: parsed.vendor || 'Unknown Vendor',
+          gallons: parsed.gallons ? Number(parsed.gallons) : undefined,
+          pricePerGallon: parsed.pricePerGallon ? Number(parsed.pricePerGallon) : undefined,
+          purpose: parsed.purpose || undefined
         });
-        await addDoc(collection(db, 'hauls', haul.id, 'expenses'), defExpenseDoc);
+        await addDoc(collection(db, 'hauls', haul.id, 'expenses'), mainExpenseDoc);
+
+        // 6. Support double-item split transaction mapping for DEF
+        if (parsed.defItem) {
+          const defTimestamp = getValidISOString(parsed.defItem.timestamp || parsed.timestamp);
+          const defExpenseDoc = cleanObject({
+            haulId: haul.id,
+            category: 'DEF',
+            amount: Number(parsed.defItem.amount || 0),
+            ownerId: auth.currentUser.uid,
+            timestamp: defTimestamp,
+            vendor: parsed.defItem.vendor || parsed.vendor || 'Unknown Vendor',
+            gallons: parsed.defItem.gallons ? Number(parsed.defItem.gallons) : undefined,
+            pricePerGallon: parsed.defItem.pricePerGallon ? Number(parsed.defItem.pricePerGallon) : undefined
+          });
+          await addDoc(collection(db, 'hauls', haul.id, 'expenses'), defExpenseDoc);
+        }
       }
 
     } catch (err: any) {
