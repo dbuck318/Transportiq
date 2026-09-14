@@ -1448,7 +1448,8 @@ export default function BiometricSettings() {
                           <div className="flex items-center gap-2">
                             <span className="px-2.5 py-1 bg-emerald-50 text-emerald-700 text-xs font-extrabold rounded-lg border border-emerald-100 flex items-center gap-1.5">
                               <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
-                              {(import.meta as any).env?.VITE_APP_VERSION || 'development'}
+                              {/* @ts-ignore */}
+                              {import.meta.env.VITE_APP_VERSION || 'development'}
                             </span>
                           </div>
                         </div>

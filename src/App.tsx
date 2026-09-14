@@ -449,9 +449,9 @@ export default function App() {
             const data = userSnap.data();
 
             // Sync lastSeenVersion
-            if (data.lastSeenVersion) {
+            if (data.lastSeenVersion && data.lastSeenVersion !== 'development') {
               const localLastSeen = localStorage.getItem('last_seen_version');
-              if (!localLastSeen) {
+              if (!localLastSeen || localLastSeen === 'development') {
                 localStorage.setItem('last_seen_version', data.lastSeenVersion);
               }
             }

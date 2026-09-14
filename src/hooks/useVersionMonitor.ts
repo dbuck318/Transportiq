@@ -9,7 +9,8 @@ export function useVersionMonitor(userUid?: string) {
   const [justUpdated, setJustUpdated] = useState(false);
   const [lastSeenVersion, setLastSeenVersion] = useState<string | null>(null);
   
-  const clientVersion = (import.meta as any).env?.VITE_APP_VERSION || 'development';
+  // @ts-ignore
+  const clientVersion = import.meta.env.VITE_APP_VERSION || 'development';
 
   useEffect(() => {
     if (clientVersion !== 'development') {

@@ -511,16 +511,35 @@ app.post("/api/parse-receipt", async (req, res) => {
       contents: {
         parts: [
           { inlineData: { data: imageBase64, mimeType } },
-          { text: `Extract receipt details. Be extremely precise.
-Look carefully for any Fuel/Diesel line items and DEF (Diesel Exhaust Fluid, BlueDEF, D.E.F., or DEF Gallons) line items on the receipt.
+          { text: `Extract receipt details with extreme, high-fidelity precision.
+You are scanning truck stop and logistics receipts (Pilot Flying J, Loves, TA, Petro, etc.) for a professional hotshot owner-operator.
 
-If the receipt contains BOTH Fuel/Diesel AND DEF charges, you MUST split them into separate entities:
-1. Put ONLY the Fuel/Diesel portion in the top-level object (category = 'Fuel', amount = fuel_cost, gallons = fuel_gallons, pricePerGallon = fuel_ppg).
-2. Put ONLY the DEF portion in the 'defItem' object (category = 'DEF', amount = def_cost, gallons = def_gallons, pricePerGallon = def_ppg).
-Do not combine their amounts into the top-level amount. The top-level amount must strictly represent ONLY the fuel portion, and defItem.amount must strictly represent ONLY the DEF portion.
+CRITICAL MANDATE FOR DIESEL AND DEF (DIESEL EXHAUST FLUID):
+Truck stop receipts frequently list TWO separate fluid purchases on a single receipt:
+1. Diesel Fuel (larger volume, e.g., 30-150+ gallons, higher total cost)
+2. DEF / Diesel Exhaust Fluid (smaller volume, e.g., 2-15 gallons, lower total cost, often labeled as "DEF BULK", "DEF PUMP", "BlueDEF", "D.E.F.", "DEF GALS", "DEF-B", "PUMP DEF", or "Blue DEF").
 
-If the receipt only contains Fuel, set category to 'Fuel' and omit the 'defItem' property entirely.
-If the receipt only contains DEF, set category to 'DEF' and omit the 'defItem' property entirely.
+You MUST inspect the receipt line-by-line for any secondary line items or separate totals representing DEF.
+If BOTH Diesel Fuel and DEF are present on the receipt:
+- DO NOT combine them into a single total under the top-level 'amount' or 'gallons'.
+- Put ONLY the Diesel Fuel portion in the top-level object:
+  - category = "Fuel"
+  - amount = Diesel Fuel total cost
+  - gallons = Diesel Fuel gallons
+  - pricePerGallon = Diesel Fuel price per gallon
+- Put ONLY the DEF portion in the 'defItem' object:
+  - category = "DEF"
+  - amount = DEF total cost
+  - gallons = DEF gallons
+  - pricePerGallon = DEF price per gallon
+  - vendor = Same as top-level vendor or specifically the truck stop name
+  - timestamp = Same as receipt date
+
+If the receipt lists a combined grand total but separates the line items, subtract the DEF portion from the Fuel portion so they do not overlap.
+Under no circumstances should the DEF amount be included in the top-level amount or gallons if defItem is present.
+
+If the receipt ONLY contains Diesel Fuel, set category to "Fuel" and set 'defItem' to null.
+If the receipt ONLY contains DEF, set category to "DEF" and set 'defItem' to null.
 If the category is 'Misc' (Other/Miscellaneous), please identify the purpose/use of the expense (e.g., 'shower', 'charity', 'hotel', 'parking') and return it in the 'purpose' field.
 
 Format strictly as JSON matching the schema.` }

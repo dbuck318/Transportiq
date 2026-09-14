@@ -34,7 +34,8 @@ export default function Login() {
   const [verificationSent, setVerificationSent] = useState(false);
 
   const syncUserProfile = async (user: any) => {
-    const appVersion = (import.meta as any).env?.VITE_APP_VERSION || '1.5.77';
+    // @ts-ignore
+    const appVersion = import.meta.env.VITE_APP_VERSION || '1.5.77';
     sessionStorage.setItem('lod_session_active', 'true');
     sessionStorage.setItem('lod_session_start', Date.now().toString());
     localStorage.setItem('lod_last_active_time', Date.now().toString());
@@ -62,8 +63,11 @@ export default function Login() {
       });
     } else {
       const userData = userSnap.data();
-      if (userData?.lastSeenVersion) {
-        localStorage.setItem('last_seen_version', userData.lastSeenVersion);
+      if (userData?.lastSeenVersion && userData.lastSeenVersion !== 'development') {
+        const localLastSeen = localStorage.getItem('last_seen_version');
+        if (!localLastSeen || localLastSeen === 'development') {
+          localStorage.setItem('last_seen_version', userData.lastSeenVersion);
+        }
       }
       await setDoc(userRef, { lastLogin: serverTimestamp(), lastActive: serverTimestamp() }, { merge: true });
     }
