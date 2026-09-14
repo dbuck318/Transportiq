@@ -1534,6 +1534,7 @@ export default function ActiveWorkspace({ haul, onClose, customFolders = [], onU
       }
 
       const parsed = await response.json();
+      console.log("=== CLIENT-SIDE OCR RESULT ===", parsed);
 
       const getValidISOString = (dateStr: any) => {
         if (!dateStr) return new Date().toISOString();

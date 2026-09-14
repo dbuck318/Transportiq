@@ -522,7 +522,14 @@ Truck stop receipts frequently list TWO separate fluid purchases on a single rec
 You MUST inspect the receipt line-by-line for any secondary line items or separate totals representing DEF.
 Even if a line is named "DEF Fuel Item" or similar and contains the word "Fuel", it is strictly Diesel Exhaust Fluid and MUST be separated into 'defItem'. It is NOT regular fuel.
 
-If BOTH Diesel Fuel and DEF are present on the receipt:
+Use the 'thinking' field to perform a step-by-step analysis:
+- Locate any truck diesel/fuel items. For example, "1 Truck Diesel" with Gallons: 47.648, Price/Gal: 6.459, and Total: 307.76.
+- Locate any DEF (Diesel Exhaust Fluid) items. For example, "1 DEF Fuel Item" with Gallons: 2.655, Price/Gal: 4.799, and Total: 12.74. Note that "DEF Fuel Item" is strictly DEF, not diesel fuel.
+- State whether BOTH items are present.
+- Explain how you will split them (Diesel into top-level, DEF into 'defItem').
+- Explicitly set 'hasDefItem' to true if BOTH items are present or if the receipt is ONLY for DEF.
+
+If BOTH Diesel Fuel and DEF are present on the receipt (hasDefItem is true):
 - DO NOT combine them into a single total under the top-level 'amount' or 'gallons'.
 - Put ONLY the Diesel Fuel portion in the top-level object:
   - category = "Fuel"
@@ -540,8 +547,8 @@ If BOTH Diesel Fuel and DEF are present on the receipt:
 If the receipt lists a combined grand total (like Subtotal: 320.50, Total: 320.50), DO NOT put that combined grand total in the top-level 'amount'. Instead, the top-level 'amount' MUST be exactly the Diesel Fuel portion (307.76), and the 'defItem.amount' MUST be exactly the DEF portion (12.74). They must be completely separate and sum up to the grand total.
 Under no circumstances should the DEF amount be included in the top-level amount or gallons if defItem is present.
 
-If the receipt ONLY contains Diesel Fuel, set category to "Fuel" and do not include the 'defItem' property in the JSON.
-If the receipt ONLY contains DEF, set category to "DEF" and do not include the 'defItem' property in the JSON.
+If the receipt ONLY contains Diesel Fuel, set category to "Fuel", set 'hasDefItem' to false, and set 'defItem' to null in the JSON.
+If the receipt ONLY contains DEF, set category to "DEF", set 'hasDefItem' to false, and set 'defItem' to null in the JSON (with the main amount reflecting the DEF cost).
 If the category is 'Misc' (Other/Miscellaneous), please identify the purpose/use of the expense (e.g., 'shower', 'charity', 'hotel', 'parking') and return it in the 'purpose' field.
 
 Format strictly as JSON matching the schema.` }
@@ -552,6 +559,8 @@ Format strictly as JSON matching the schema.` }
         responseSchema: {
           type: Type.OBJECT,
           properties: {
+            thinking: { type: Type.STRING },
+            hasDefItem: { type: Type.BOOLEAN },
             vendor: { type: Type.STRING },
             timestamp: { type: Type.STRING },
             category: { type: Type.STRING, enum: ["Fuel", "DEF", "Maintenance", "Food", "Misc", "Toll"] },
@@ -561,6 +570,7 @@ Format strictly as JSON matching the schema.` }
             purpose: { type: Type.STRING },
             defItem: {
               type: Type.OBJECT,
+              nullable: true,
               properties: {
                 vendor: { type: Type.STRING },
                 timestamp: { type: Type.STRING },
@@ -572,7 +582,7 @@ Format strictly as JSON matching the schema.` }
               required: ["amount"]
             }
           },
-          required: ["vendor", "amount", "category"]
+          required: ["thinking", "hasDefItem", "vendor", "amount", "category", "defItem"]
         }
       }
     });
@@ -581,6 +591,14 @@ Format strictly as JSON matching the schema.` }
     console.log("=== RAW GEMINI OCR OUTPUT ===");
     console.log(outputText);
     console.log("=============================");
+
+    // Save to a debug file so we can view exactly what Gemini is producing
+    try {
+      fs.writeFileSync("ocr-debug.json", outputText || "{}");
+    } catch (fsErr) {
+      console.error("Failed to write ocr-debug.json:", fsErr);
+    }
+
     const parsed = JSON.parse(outputText!);
     
     res.json(parsed);
