@@ -311,13 +311,10 @@ export default function App() {
     // Only show update modal for existing users if there are new updates available
     const lastSeen = localStorage.getItem('last_seen_version');
     if (updateAvailable && lastSeen && lastSeen !== 'development') {
-      const pendingUpdates = getUpdatesSince(currentVersion, latestServerVersion || currentVersion || '1.5.77');
-      if (pendingUpdates.length > 0) {
-        setShowUpdatePopup(true);
-        return;
-      }
+      setShowUpdatePopup(true);
+    } else {
+      setShowUpdatePopup(false);
     }
-    setShowUpdatePopup(false);
   }, [updateAvailable, currentVersion, latestServerVersion]);
 
   const triggerAppUpdate = async () => {
@@ -1395,18 +1392,38 @@ export default function App() {
                   </p>
                   
                   <div className="bg-slate-50 rounded-2xl p-4 border border-slate-100/60 max-h-[220px] overflow-y-auto space-y-3 scrollbar-thin">
-                    {getUpdatesSince(currentVersion, latestServerVersion || currentVersion || '1.5.77').map((update: AppUpdate, idx: number) => (
-                      <div key={idx} className="flex gap-2.5 items-start">
-                        <span className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1.5 flex-shrink-0" />
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <p className="text-xs font-bold text-slate-800">{update.title}</p>
-                            <span className="px-1.5 py-0.5 bg-slate-200/80 text-[9px] font-bold text-slate-500 rounded-md">v{update.version}</span>
+                    {(() => {
+                      const pendingUpdates = getUpdatesSince(currentVersion, latestServerVersion || currentVersion || '1.5.77');
+                      if (pendingUpdates.length > 0) {
+                        return pendingUpdates.map((update: AppUpdate, idx: number) => (
+                          <div key={idx} className="flex gap-2.5 items-start">
+                            <span className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1.5 flex-shrink-0" />
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <p className="text-xs font-bold text-slate-800">{update.title}</p>
+                                <span className="px-1.5 py-0.5 bg-slate-200/80 text-[9px] font-bold text-slate-500 rounded-md">v{update.version}</span>
+                              </div>
+                              <p className="text-xs text-slate-500 leading-relaxed mt-0.5">{update.description}</p>
+                            </div>
                           </div>
-                          <p className="text-xs text-slate-500 leading-relaxed mt-0.5">{update.description}</p>
-                        </div>
-                      </div>
-                    ))}
+                        ));
+                      } else {
+                        return (
+                          <div className="flex gap-2.5 items-start">
+                            <span className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1.5 flex-shrink-0" />
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <p className="text-xs font-bold text-slate-800">Operational & Stability Improvements</p>
+                                <span className="px-1.5 py-0.5 bg-slate-200/80 text-[9px] font-bold text-slate-500 rounded-md">{latestServerVersion || 'v1.5.77'}</span>
+                              </div>
+                              <p className="text-xs text-slate-500 leading-relaxed mt-0.5">
+                                Performance optimizations, security updates, and general reliability enhancements to refine tracking operations.
+                              </p>
+                            </div>
+                          </div>
+                        );
+                      }
+                    })()}
                   </div>
                 </div>
 
@@ -1441,7 +1458,7 @@ export default function App() {
         </AnimatePresence>
 
         <AnimatePresence>
-          {justUpdated && !showUpdatePopup && getUpdatesSince(lastSeenVersion, currentVersion || '1.5.77').length > 0 && (
+          {justUpdated && !showUpdatePopup && (
             <motion.div 
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
@@ -1480,18 +1497,38 @@ export default function App() {
                   </p>
                   
                   <div className="bg-slate-50 rounded-2xl p-4 border border-slate-100/60 max-h-[280px] overflow-y-auto space-y-3 scrollbar-thin">
-                    {getUpdatesSince(lastSeenVersion, currentVersion || '1.5.77').map((update: AppUpdate, idx: number) => (
-                      <div key={idx} className="flex gap-2.5 items-start">
-                        <span className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1.5 flex-shrink-0" />
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <p className="text-xs font-bold text-slate-800">{update.title}</p>
-                            <span className="px-1.5 py-0.5 bg-slate-200/80 text-[9px] font-bold text-slate-500 rounded-md">v{update.version}</span>
+                    {(() => {
+                      const appliedUpdates = getUpdatesSince(lastSeenVersion, currentVersion || '1.5.77');
+                      if (appliedUpdates.length > 0) {
+                        return appliedUpdates.map((update: AppUpdate, idx: number) => (
+                          <div key={idx} className="flex gap-2.5 items-start">
+                            <span className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1.5 flex-shrink-0" />
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <p className="text-xs font-bold text-slate-800">{update.title}</p>
+                                <span className="px-1.5 py-0.5 bg-slate-200/80 text-[9px] font-bold text-slate-500 rounded-md">v{update.version}</span>
+                              </div>
+                              <p className="text-xs text-slate-500 leading-relaxed mt-0.5">{update.description}</p>
+                            </div>
                           </div>
-                          <p className="text-xs text-slate-500 leading-relaxed mt-0.5">{update.description}</p>
-                        </div>
-                      </div>
-                    ))}
+                        ));
+                      } else {
+                        return (
+                          <div className="flex gap-2.5 items-start">
+                            <span className="w-1.5 h-1.5 rounded-full bg-blue-500 mt-1.5 flex-shrink-0" />
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <p className="text-xs font-bold text-slate-800">Operational & Stability Improvements</p>
+                                <span className="px-1.5 py-0.5 bg-slate-200/80 text-[9px] font-bold text-slate-500 rounded-md">{currentVersion || 'v1.5.77'}</span>
+                              </div>
+                              <p className="text-xs text-slate-500 leading-relaxed mt-0.5">
+                                Performance optimizations, security updates, and general reliability enhancements to refine tracking operations.
+                              </p>
+                            </div>
+                          </div>
+                        );
+                      }
+                    })()}
                   </div>
                 </div>
 
