@@ -69,12 +69,14 @@ export default function Login() {
     setLoading(true);
     setError('');
     try {
+      sessionStorage.setItem('lod_session_active', 'true');
       await setPersistence(auth, staySignedIn ? browserLocalPersistence : browserSessionPersistence);
       const result = await signInWithPopup(auth, googleProvider);
       if (result.user) {
         await syncUserProfile(result.user);
       }
     } catch (err: any) {
+      sessionStorage.removeItem('lod_session_active');
       if (err.code !== 'auth/popup-closed-by-user') {
         setError(err.message);
       }
@@ -141,6 +143,7 @@ export default function Login() {
             localStorage.setItem('lod_last_email', email);
           }
         } catch (e) {}
+        sessionStorage.setItem('lod_session_active', 'true');
         await setPersistence(auth, staySignedIn ? browserLocalPersistence : browserSessionPersistence);
         const result = await signInWithCustomToken(auth, customToken);
         await syncUserProfile(result.user);
@@ -184,6 +187,7 @@ export default function Login() {
     setLoading(true);
     setError('');
     try {
+      sessionStorage.setItem('lod_session_active', 'true');
       if (isLogin) {
         await setPersistence(auth, staySignedIn ? browserLocalPersistence : browserSessionPersistence);
         const result = await signInWithEmailAndPassword(auth, email, password);
@@ -196,6 +200,7 @@ export default function Login() {
         setVerificationSent(true);
       }
     } catch (err: any) {
+      sessionStorage.removeItem('lod_session_active');
       setError(err.message);
     } finally {
       setLoading(false);

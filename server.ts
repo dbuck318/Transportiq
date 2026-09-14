@@ -511,7 +511,19 @@ app.post("/api/parse-receipt", async (req, res) => {
       contents: {
         parts: [
           { inlineData: { data: imageBase64, mimeType } },
-          { text: "Extract receipt details. Be extremely precise. Crucially, look for BOTH Fuel/Diesel lines and DEF (Diesel Exhaust Fluid) lines on the receipt. If the receipt contains BOTH fuel/diesel costs and DEF costs, price per gallon, or gallons pumped, you MUST split them. Put the main Fuel portion in the top-level object (category='Fuel', amount, gallons, pricePerGallon) and put the DEF portion in the 'defItem' field (category='DEF', amount, gallons, pricePerGallon). If the category is 'Misc' (Other/Miscellaneous), please identify the purpose/use of the expense (e.g., 'shower', 'charity', 'hotel', 'parking') and return it in the 'purpose' field. Format as JSON with: vendor, timestamp (ISO), category (one of: Fuel, DEF, Maintenance, Food, Misc, Toll), amount (number), gallons (number, null if not fuel or DEF), pricePerGallon (number, null if not fuel or DEF), purpose (string, null if not Misc), and optionally 'defItem' (with vendor, timestamp, category='DEF', amount, gallons, pricePerGallon)." }
+          { text: `Extract receipt details. Be extremely precise.
+Look carefully for any Fuel/Diesel line items and DEF (Diesel Exhaust Fluid, BlueDEF, D.E.F., or DEF Gallons) line items on the receipt.
+
+If the receipt contains BOTH Fuel/Diesel AND DEF charges, you MUST split them into separate entities:
+1. Put ONLY the Fuel/Diesel portion in the top-level object (category = 'Fuel', amount = fuel_cost, gallons = fuel_gallons, pricePerGallon = fuel_ppg).
+2. Put ONLY the DEF portion in the 'defItem' object (category = 'DEF', amount = def_cost, gallons = def_gallons, pricePerGallon = def_ppg).
+Do not combine their amounts into the top-level amount. The top-level amount must strictly represent ONLY the fuel portion, and defItem.amount must strictly represent ONLY the DEF portion.
+
+If the receipt only contains Fuel, set category to 'Fuel' and 'defItem' to null.
+If the receipt only contains DEF, set category to 'DEF' and 'defItem' to null.
+If the category is 'Misc' (Other/Miscellaneous), please identify the purpose/use of the expense (e.g., 'shower', 'charity', 'hotel', 'parking') and return it in the 'purpose' field.
+
+Format strictly as JSON matching the schema.` }
         ]
       },
       config: {
