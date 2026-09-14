@@ -10,6 +10,7 @@ import ActiveWorkspace from './components/ActiveWorkspace';
 import HistoricalTable from './components/HistoricalTable';
 import WeeklySummary from './components/WeeklySummary';
 import Login from './components/Login';
+import BiometricUnlock from './components/BiometricUnlock';
 import AdminPanel from './components/AdminPanel';
 import BiometricSettings from './components/BiometricSettings';
 import FeedbackTab from './components/FeedbackTab';
@@ -43,6 +44,7 @@ const formatRollingVersion = (v: string) => {
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
+  const [isSessionLocked, setIsSessionLocked] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
   const [isSuperAdmin, setIsSuperAdmin] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -390,9 +392,13 @@ export default function App() {
         if (!isSessionActive) {
           localStorage.removeItem('lod_background_entered');
           localStorage.removeItem('lod_last_active_time');
-          logout();
-          setUser(null);
+          setIsSessionLocked(true);
+          setUser(u);
           setLoading(false);
+          
+          const emailLower = (u.email || '').toLowerCase();
+          const isSuper = SUPER_ADMIN_EMAILS.map(e => e.toLowerCase()).includes(emailLower);
+          setIsSuperAdmin(isSuper);
           return;
         }
 
@@ -405,8 +411,8 @@ export default function App() {
           if (entered > 0 && (now - entered) >= THIRTY_MINUTES_MS) {
             localStorage.removeItem('lod_background_entered');
             localStorage.removeItem('lod_last_active_time');
-            logout();
-            setUser(null);
+            setIsSessionLocked(true);
+            setUser(u);
             setLoading(false);
             return;
           }
@@ -415,6 +421,7 @@ export default function App() {
         localStorage.removeItem('lod_background_entered');
         localStorage.setItem('lod_last_active_time', now.toString());
         sessionStorage.setItem('lod_session_active', 'true');
+        setIsSessionLocked(false);
 
         setUser(u);
         setLoading(false);
@@ -693,6 +700,10 @@ export default function App() {
         incrementVersion();
       }
     }, (error) => {
+      if (error.code === 'permission-denied') {
+        console.warn("Hauls snapshot query cancelled or permissions revoked during session lock:", error);
+        return;
+      }
       handleFirestoreError(error, OperationType.LIST, 'hauls');
     });
   }, [user]);
@@ -800,8 +811,18 @@ export default function App() {
     );
   }
 
+  const handleLockSignOut = async () => {
+    await logout();
+    setUser(null);
+    setIsSessionLocked(false);
+  };
+
   if (!user) {
     return <Login />;
+  }
+
+  if (isSessionLocked) {
+    return <BiometricUnlock user={user} onUnlock={() => setIsSessionLocked(false)} onSignOut={handleLockSignOut} />;
   }
 
   const activeWorkspaceHaul = hauls.find(h => h.id === activeHaulId);
